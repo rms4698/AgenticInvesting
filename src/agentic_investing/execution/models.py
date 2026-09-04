@@ -102,7 +102,7 @@ class Order:
     def average_fill_price(self) -> Decimal | None:
         if not self.fills:
             return None
-        total_value = sum(fill.price * fill.quantity for fill in self.fills)
+        total_value = sum((fill.price * fill.quantity for fill in self.fills), start=Decimal(0))
         total_quantity = sum(fill.quantity for fill in self.fills)
         return total_value / total_quantity
 

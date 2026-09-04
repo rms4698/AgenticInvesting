@@ -14,10 +14,9 @@ cash, a data outage, etc.) can never cause the strategy to believe it holds a
 position it doesn't — the next bar's decision is always grounded in truth.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Sequence
 
 from agentic_investing.data.models import Bar
 from agentic_investing.execution import OrderManager, OrderOutcome, PaperBroker

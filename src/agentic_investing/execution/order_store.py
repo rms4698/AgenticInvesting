@@ -11,7 +11,7 @@ before deciding whether a retry is safe.
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 

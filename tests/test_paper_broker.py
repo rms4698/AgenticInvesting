@@ -1,6 +1,5 @@
 import sys
 import unittest
-from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 

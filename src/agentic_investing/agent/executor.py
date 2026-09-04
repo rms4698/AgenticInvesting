@@ -19,7 +19,6 @@ subsequent bar's intrabar high/low — it does not trust the agent to
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from decimal import Decimal
 
 from agentic_investing.data.models import Bar

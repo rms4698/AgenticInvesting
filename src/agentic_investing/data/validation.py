@@ -1,8 +1,6 @@
 """Deterministic quality checks for canonical market bars."""
 
-from collections import defaultdict
 from datetime import datetime
-from decimal import Decimal
 from typing import Iterable
 
 from .models import Bar, DataQualityIssue, DataQualityReport

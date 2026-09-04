@@ -39,6 +39,7 @@ class OrderManagerBuyGatingTests(unittest.TestCase):
 
         self.assertTrue(outcome.submitted)
         self.assertIsNotNone(outcome.order)
+        assert outcome.order is not None  # narrows for type checkers; assertIsNotNone already verified this
         self.assertEqual(outcome.order.status, OrderStatus.FILLED)
         self.assertGreater(outcome.order.filled_quantity, 0)
 
@@ -113,6 +114,7 @@ class OrderManagerBuyGatingTests(unittest.TestCase):
             commission_rate=Decimal("0"),
         )
 
+        assert first.order is not None and second.order is not None  # both submissions succeeded
         self.assertEqual(first.order.request.client_order_id, second.order.request.client_order_id)
         self.assertIs(first.order, second.order)
         self.assertEqual(len(broker.list_orders()), 1)
@@ -145,6 +147,7 @@ class OrderManagerSellGatingTests(unittest.TestCase):
         )
 
         self.assertTrue(outcome.submitted)
+        assert outcome.order is not None  # a submitted sell always has an order
         self.assertEqual(outcome.order.status, OrderStatus.FILLED)
         self.assertEqual(broker.list_positions(), ())
 

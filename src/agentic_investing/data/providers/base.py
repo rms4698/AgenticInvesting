@@ -22,3 +22,4 @@ class HistoricalDataProvider(Protocol):
         end: date,
     ) -> tuple[list[Bar], str]:
         """Return normalized bars and a source-response fingerprint."""
+        ...

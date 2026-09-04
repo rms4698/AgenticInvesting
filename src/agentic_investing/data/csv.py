@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from .models import Bar, Timeframe
+from .models import Bar
 
 _REQUIRED_COLUMNS = {
     "instrument",

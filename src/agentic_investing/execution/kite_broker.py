@@ -20,7 +20,7 @@ from decimal import Decimal
 from typing import Any, Protocol
 
 from .models import Fill, Order, OrderRequest, OrderSide, OrderStatus, Position
-from .order_store import OrderStore, derive_tag
+from .order_store import OrderStore
 
 # Fixed Kite Connect API constants (see https://kite.trade/docs/connect/v3/orders/).
 # These never vary per client instance, so they are module-level rather than

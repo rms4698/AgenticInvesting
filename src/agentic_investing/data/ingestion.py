@@ -3,7 +3,6 @@
 import hashlib
 import json
 from datetime import date
-from decimal import Decimal
 from pathlib import Path
 from typing import Iterable
 
