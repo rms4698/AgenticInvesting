@@ -16,7 +16,10 @@ venv/
 data/raw/
 data/processed/
 data/real/
-reports/
+reports/*
+!reports/shadow_daily/
+reports/shadow_daily/*
+!reports/shadow_daily/observation_log.md
 *.db
 
 # Local Kite session artifacts (normally stored under LOCALAPPDATA)

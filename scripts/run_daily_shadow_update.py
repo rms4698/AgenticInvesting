@@ -118,6 +118,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--slow-period", type=int, default=50)
     parser.add_argument("--output-dir", default="data/real", help="Dataset/manifest directory")
     parser.add_argument("--reports-dir", default="reports/shadow_daily", help="Dated daily-report archive directory")
+    parser.add_argument(
+        "--auto-login",
+        action="store_true",
+        help=(
+            "If no fresh Kite session is found, open the interactive browser login flow "
+            "automatically instead of exiting. Collapses the daily workflow into one command; "
+            "still requires manual interaction in the browser (Zerodha login + TOTP)."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -125,10 +134,17 @@ def main() -> int:
     args = parse_args()
 
     credentials = _resolve_credentials()
+    if credentials is None and args.auto_login:
+        print("No fresh Kite session found; starting interactive login...")
+        from agentic_investing.auth import authenticate_kite
+
+        session = authenticate_kite()
+        credentials = (session.api_key, session.access_token)
     if credentials is None:
         print(
             "No valid Kite credentials found. Either set KITE_API_KEY and "
-            "KITE_ACCESS_TOKEN, or run: .\\.venv\\Scripts\\python.exe scripts\\kite_login.py",
+            "KITE_ACCESS_TOKEN, pass --auto-login, or run: "
+            ".\\.venv\\Scripts\\python.exe scripts\\kite_login.py",
             file=sys.stderr,
         )
         return 2
