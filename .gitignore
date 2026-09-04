@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Generated data and reports
+data/raw/
+data/processed/
+data/real/
+data/yahoo/
+reports/
+*.db
+
+# Local Kite session artifacts (normally stored under LOCALAPPDATA)
+kite-session.json
+kite-session.json.tmp
+
+# IDE
+.vscode/
+.idea/
