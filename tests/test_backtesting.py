@@ -37,6 +37,23 @@ def make_bars(closes: list[str]) -> list[Bar]:
     return bars
 
 
+def make_ohlc_bar(instrument: str, timestamp: datetime, *, open_: str, high: str, low: str, close: str) -> Bar:
+    """Build a Bar with independently controllable OHLC, for stop/target tests."""
+
+    return Bar(
+        instrument=instrument,
+        exchange="NSE",
+        timeframe="1d",
+        timestamp=timestamp,
+        available_at=timestamp,
+        open=Decimal(open_),
+        high=Decimal(high),
+        low=Decimal(low),
+        close=Decimal(close),
+        volume=100000,
+    )
+
+
 class StrategyTests(unittest.TestCase):
     def test_sma_strategy_uses_only_closed_bars(self) -> None:
         strategy = SmaCrossoverStrategy(fast_period=2, slow_period=3)
@@ -156,6 +173,105 @@ class BacktesterTests(unittest.TestCase):
         # The final point is the realized post-liquidation cash, not the
         # unrealized close-mark value that was there before the forced exit.
         self.assertEqual(result.equity_curve[-1], result.final_capital)
+
+
+class StopLossAndTargetTests(unittest.TestCase):
+    """Regression tests for independent per-position stop-loss/profit-target exits.
+
+    Before this feature, the only exit mechanism was the strategy's own
+    (lagging) crossover SELL signal — a large adverse move could ride for
+    days before the strategy decided to exit, and there was no way to lock
+    in a profit target independent of the signal either.
+    """
+
+    def test_stop_loss_closes_position_intrabar_before_the_strategy_would_exit(self) -> None:
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        # BUY signal decided at day4 (close crossover), executes at day5's
+        # open (price 10). Day6's bar gaps/dips intrabar to 9 (a 10% drop,
+        # breaching the 5% stop) while its close (9.5) stays high enough that
+        # the SMA crossover would NOT yet emit a SELL — proving the stop
+        # fires independently of (and before) the lagging signal.
+        bars = [
+            make_ohlc_bar("TEST", start, open_="10", high="10", low="10", close="10"),
+            make_ohlc_bar("TEST", start + timedelta(days=1), open_="9", high="9", low="9", close="9"),
+            make_ohlc_bar("TEST", start + timedelta(days=2), open_="8", high="8", low="8", close="8"),
+            make_ohlc_bar("TEST", start + timedelta(days=3), open_="9", high="9", low="9", close="9"),
+            make_ohlc_bar("TEST", start + timedelta(days=4), open_="10", high="10", low="10", close="10"),
+            make_ohlc_bar("TEST", start + timedelta(days=5), open_="10", high="10.5", low="9.9", close="10"),
+            make_ohlc_bar("TEST", start + timedelta(days=6), open_="9.8", high="9.8", low="9.0", close="9.5"),
+        ]
+        config = BacktestConfig(
+            initial_capital=Decimal("100000"),
+            commission_rate=Decimal("0"),
+            slippage_rate=Decimal("0"),
+            stop_distance_fraction=Decimal("0.05"),
+            stop_loss_distance_fraction=Decimal("0.05"),
+        )
+        result = Backtester(config).run(bars, SmaCrossoverStrategy(fast_period=2, slow_period=3))
+
+        self.assertEqual(len(result.trades), 1)
+        trade = result.trades[0]
+        self.assertEqual(trade.exit_reason, "STOP_LOSS")
+        self.assertEqual(trade.exit_time, bars[6].timestamp)
+        # Entry at day5 open (10) with a 5% stop -> stop price 9.5; day7's
+        # low (9.0) breaches it, day7's open (9.8) is above the stop, so the
+        # exit fills at the stop price itself (no gap-through).
+        self.assertEqual(trade.exit_price, Decimal("9.5"))
+
+    def test_target_exit_closes_position_intrabar_at_profit_target(self) -> None:
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        bars = [
+            make_ohlc_bar("TEST", start, open_="10", high="10", low="10", close="10"),
+            make_ohlc_bar("TEST", start + timedelta(days=1), open_="9", high="9", low="9", close="9"),
+            make_ohlc_bar("TEST", start + timedelta(days=2), open_="8", high="8", low="8", close="8"),
+            make_ohlc_bar("TEST", start + timedelta(days=3), open_="9", high="9", low="9", close="9"),
+            make_ohlc_bar("TEST", start + timedelta(days=4), open_="10", high="10", low="10", close="10"),
+            # Entry at day5 open (10). Default minimum_reward_risk is 1.5x,
+            # stop_distance_fraction is 5% -> target = 10 * (1 + 0.05*1.5) = 10.75.
+            make_ohlc_bar("TEST", start + timedelta(days=5), open_="10", high="10.5", low="9.9", close="10.2"),
+            make_ohlc_bar("TEST", start + timedelta(days=6), open_="10.3", high="10.9", low="10.2", close="10.6"),
+        ]
+        config = BacktestConfig(
+            initial_capital=Decimal("100000"),
+            commission_rate=Decimal("0"),
+            slippage_rate=Decimal("0"),
+            stop_distance_fraction=Decimal("0.05"),
+            stop_loss_distance_fraction=Decimal("0.05"),
+        )
+        result = Backtester(config).run(bars, SmaCrossoverStrategy(fast_period=2, slow_period=3))
+
+        self.assertEqual(len(result.trades), 1)
+        trade = result.trades[0]
+        self.assertEqual(trade.exit_reason, "TARGET")
+        self.assertEqual(trade.exit_time, bars[6].timestamp)
+        self.assertEqual(trade.exit_price, Decimal("10.75"))
+
+    def test_stop_loss_and_target_can_be_disabled(self) -> None:
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        bars = [
+            make_ohlc_bar("TEST", start, open_="10", high="10", low="10", close="10"),
+            make_ohlc_bar("TEST", start + timedelta(days=1), open_="9", high="9", low="9", close="9"),
+            make_ohlc_bar("TEST", start + timedelta(days=2), open_="8", high="8", low="8", close="8"),
+            make_ohlc_bar("TEST", start + timedelta(days=3), open_="9", high="9", low="9", close="9"),
+            make_ohlc_bar("TEST", start + timedelta(days=4), open_="10", high="10", low="10", close="10"),
+            # Would breach a 5% stop intrabar (low 9.0) if stop-loss were enabled.
+            make_ohlc_bar("TEST", start + timedelta(days=5), open_="10", high="10.5", low="9.0", close="10"),
+            make_ohlc_bar("TEST", start + timedelta(days=6), open_="10", high="10", low="8", close="8"),
+        ]
+        config = BacktestConfig(
+            initial_capital=Decimal("100000"),
+            commission_rate=Decimal("0"),
+            slippage_rate=Decimal("0"),
+            stop_distance_fraction=Decimal("0.05"),
+            enable_stop_loss=False,
+            enable_target_exit=False,
+        )
+        result = Backtester(config).run(bars, SmaCrossoverStrategy(fast_period=2, slow_period=3))
+
+        # No stop/target exit despite the intrabar breach; the position is
+        # still open at the end and gets force-liquidated instead.
+        self.assertEqual(len(result.trades), 1)
+        self.assertEqual(result.trades[0].exit_reason, "FORCED_LIQUIDATION")
 
 
 if __name__ == "__main__":

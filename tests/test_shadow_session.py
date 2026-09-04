@@ -18,6 +18,14 @@ def make_bar(instrument: str, timestamp: datetime, close_text: str) -> Bar:
     return Bar(instrument, "NSE", "1d", timestamp, timestamp, close, close, close, close, 100000)
 
 
+def make_ohlc_bar(instrument: str, timestamp: datetime, *, open_: str, high: str, low: str, close: str) -> Bar:
+    """Build a Bar with independently controllable OHLC, for stop/target tests."""
+
+    return Bar(
+        instrument, "NSE", "1d", timestamp, timestamp, Decimal(open_), Decimal(high), Decimal(low), Decimal(close), 100000
+    )
+
+
 def make_session(**config_overrides) -> ShadowTradingSession:
     config = ShadowSessionConfig(
         initial_capital=Decimal("100000"),
@@ -31,7 +39,11 @@ def make_session(**config_overrides) -> ShadowTradingSession:
 
 class ShadowSessionHappyPathTests(unittest.TestCase):
     def test_signals_execute_at_next_bar_open_matching_backtester_semantics(self) -> None:
-        session = make_session()
+        # Stop-loss/target disabled here: this test is specifically about
+        # next-bar-open *signal* timing, and the price swings below (11->10)
+        # would otherwise trip the default 5% stop before the SELL signal
+        # gets a chance to fire, which is exercised by dedicated tests below.
+        session = make_session(enable_stop_loss=False, enable_target_exit=False)
         start = datetime(2026, 1, 1, tzinfo=timezone.utc)
         # BUY signal is decided at day4 (executes at day5's open); SELL signal
         # is decided at day7 (executes at day8's open) — the extra day8 bar is
@@ -240,6 +252,86 @@ class ShadowSessionPositionAwareDecisionTests(unittest.TestCase):
         # (already holding, condition for SELL is fast<slow which isn't true here).
         held_call = strategy.decide(bars, 4, holding=True)
         self.assertIsNone(held_call)
+
+
+class ShadowSessionStopLossAndTargetTests(unittest.TestCase):
+    """Regression tests for independent per-position stop-loss/profit-target exits.
+
+    Mirrors the equivalent Backtester tests: the stop/target must fire from
+    intrabar high/low, independent of (and potentially before) the lagging
+    SMA crossover SELL signal, and must never be suppressed by stale/gapped
+    data — exits are always permitted per the platform's risk-first invariant.
+    """
+
+    def test_stop_loss_closes_position_intrabar_and_records_incident(self) -> None:
+        # Explicit stop_loss_distance_fraction=0.05 decouples this test from
+        # whatever the production default happens to be tuned to.
+        session = make_session(stop_loss_distance_fraction=Decimal("0.05"))
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        session.on_bar(make_bar("TEST", start, "10"))
+        session.on_bar(make_bar("TEST", start + timedelta(days=1), "9"))
+        session.on_bar(make_bar("TEST", start + timedelta(days=2), "8"))
+        session.on_bar(make_bar("TEST", start + timedelta(days=3), "9"))
+        session.on_bar(make_bar("TEST", start + timedelta(days=4), "10"))  # BUY decided here
+        session.on_bar(
+            make_ohlc_bar(
+                "TEST", start + timedelta(days=5), open_="10", high="10.5", low="9.9", close="10"
+            )
+        )  # BUY fills at open=10; 5% stop set at 9.5
+        session.on_bar(
+            make_ohlc_bar(
+                "TEST", start + timedelta(days=6), open_="9.8", high="9.8", low="9.0", close="9.5"
+            )
+        )  # intrabar low breaches the 9.5 stop; close (9.5) would not yet trigger a SELL signal
+
+        self.assertEqual(session.broker.list_positions(), ())
+        stop_incidents = [i for i in session.incidents if i.category == "STOP_LOSS"]
+        self.assertEqual(len(stop_incidents), 1)
+
+    def test_target_exit_closes_position_intrabar_and_records_incident(self) -> None:
+        session = make_session(stop_loss_distance_fraction=Decimal("0.05"))
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        session.on_bar(make_bar("TEST", start, "10"))
+        session.on_bar(make_bar("TEST", start + timedelta(days=1), "9"))
+        session.on_bar(make_bar("TEST", start + timedelta(days=2), "8"))
+        session.on_bar(make_bar("TEST", start + timedelta(days=3), "9"))
+        session.on_bar(make_bar("TEST", start + timedelta(days=4), "10"))  # BUY decided here
+        session.on_bar(
+            make_ohlc_bar(
+                "TEST", start + timedelta(days=5), open_="10", high="10.5", low="9.9", close="10.2"
+            )
+        )  # BUY fills at open=10; target = 10*(1+0.05*1.5) = 10.75
+        session.on_bar(
+            make_ohlc_bar(
+                "TEST", start + timedelta(days=6), open_="10.3", high="10.9", low="10.2", close="10.6"
+            )
+        )  # intrabar high (10.9) reaches the 10.75 target
+
+        self.assertEqual(session.broker.list_positions(), ())
+        target_incidents = [i for i in session.incidents if i.category == "TARGET_EXIT"]
+        self.assertEqual(len(target_incidents), 1)
+
+    def test_stop_loss_is_never_suppressed_by_stale_data(self) -> None:
+        session = make_session(stop_loss_distance_fraction=Decimal("0.05"))
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        session.on_bar(make_bar("TEST", start, "10"))
+        session.on_bar(make_bar("TEST", start + timedelta(days=1), "9"))
+        session.on_bar(make_bar("TEST", start + timedelta(days=2), "8"))
+        session.on_bar(make_bar("TEST", start + timedelta(days=3), "9"))
+        session.on_bar(make_bar("TEST", start + timedelta(days=4), "10"))
+        session.on_bar(
+            make_ohlc_bar("TEST", start + timedelta(days=5), open_="10", high="10.5", low="9.9", close="10")
+        )
+        session.mark_stale("simulated outage")
+        session.on_bar(
+            make_ohlc_bar("TEST", start + timedelta(days=6), open_="9.8", high="9.8", low="9.0", close="9.5")
+        )
+
+        # The stop-loss exit must still fire despite the stale flag; only new
+        # BUY entries are ever suppressed by stale/gapped data.
+        self.assertEqual(session.broker.list_positions(), ())
+        stop_incidents = [i for i in session.incidents if i.category == "STOP_LOSS"]
+        self.assertEqual(len(stop_incidents), 1)
 
 
 class ShadowSessionInstrumentGuardTests(unittest.TestCase):

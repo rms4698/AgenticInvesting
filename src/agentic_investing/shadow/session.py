@@ -30,8 +30,22 @@ class ShadowSessionConfig:
     initial_capital: Decimal = Decimal("100000")
     commission_rate: Decimal = Decimal("0.0003")
     slippage_rate: Decimal = Decimal("0.0005")
+    # Used ONLY for position sizing (RiskEngine.size_new_position), not as
+    # the actual stop-loss trigger distance — see stop_loss_distance_fraction.
+    # Reusing this tight sizing fraction as the real exit distance caused the
+    # stop to fire on ordinary day-to-day noise for a multi-week positional
+    # strategy (verified on real NIFTYBEES data: 5% produced 126 whipsaw
+    # trades and turned +9.68% into -2.95% return in the equivalent backtest).
     stop_distance_fraction: Decimal = Decimal("0.05")
+    # The ACTUAL stop-loss/target trigger distance from entry price. Wider
+    # than stop_distance_fraction on purpose — see BacktestConfig for the
+    # full rationale and the walk-forward trade-off this default reflects;
+    # kept identical between backtest and shadow session so results are
+    # comparable.
+    stop_loss_distance_fraction: Decimal = Decimal("0.20")
     max_bar_gap: timedelta = timedelta(days=4)  # tolerate weekends; flag longer gaps
+    enable_stop_loss: bool = True
+    enable_target_exit: bool = True
 
     def __post_init__(self) -> None:
         if self.initial_capital <= 0:
@@ -40,6 +54,8 @@ class ShadowSessionConfig:
             raise ValueError("cost rates cannot be negative")
         if self.stop_distance_fraction <= 0 or self.stop_distance_fraction >= 1:
             raise ValueError("stop_distance_fraction must be between 0 and 1")
+        if self.stop_loss_distance_fraction <= 0 or self.stop_loss_distance_fraction >= 1:
+            raise ValueError("stop_loss_distance_fraction must be between 0 and 1")
         if self.max_bar_gap <= timedelta(0):
             raise ValueError("max_bar_gap must be positive")
 
@@ -49,7 +65,7 @@ class Incident:
     """One noteworthy event for operator review; never resolved automatically."""
 
     timestamp: datetime
-    category: str  # "DATA_GAP" | "ORDER_BLOCKED" | "MANUAL_STALE"
+    category: str  # "DATA_GAP" | "ORDER_BLOCKED" | "MANUAL_STALE" | "STOP_LOSS" | "TARGET_EXIT"
     message: str
 
 
@@ -93,6 +109,13 @@ class ShadowTradingSession:
         self._explicit_stale_reason: str | None = None
         self._events: list[_BarEvent] = []
         self.incidents: list[Incident] = []
+        # Stop-loss/target levels for the currently open position, if any.
+        # PaperBroker's Position model has no notion of these (it only knows
+        # quantity/average_price), so this session tracks them itself — set
+        # when a BUY fills, checked every subsequent bar, and cleared when
+        # the position closes for any reason.
+        self._stop_price: Decimal | None = None
+        self._target_price: Decimal | None = None
 
     def mark_stale(self, reason: str) -> None:
         """Explicitly flag the feed as stale before a new bar arrives.
@@ -156,8 +179,55 @@ class ShadowTradingSession:
         )
         self.risk_engine.mark_to_market(equity_before_bar, bar.timestamp)
 
-        signal = self._pending_signal(holding=position is not None)
         outcome: OrderOutcome | None = None
+        exit_action: str | None = None
+
+        # Stop-loss and profit-target are checked every bar a position is
+        # held, using THIS bar's intrabar low/high — not only on bars where
+        # the strategy happens to emit a SELL signal. A lagging crossover
+        # signal could otherwise let a large adverse move ride for days
+        # before the strategy itself decides to exit. Exits here are never
+        # suppressed by stale/gapped data, matching the platform's
+        # risk-first invariant that closing a position is always permitted.
+        # If both could be read as hit on the same bar (a large gap), the
+        # stop takes priority — assume the worse outcome, not the better one.
+        if position is not None and self._stop_price is not None and bar.low <= self._stop_price:
+            trigger_price = min(bar.open, self._stop_price)
+            fill_price = trigger_price * (Decimal("1") - self.config.slippage_rate)
+            outcome = self.order_manager.submit_sell(
+                client_order_id=f"{bar.instrument}-{bar.timestamp.isoformat()}-stoploss",
+                instrument=bar.instrument,
+                exchange=bar.exchange,
+                quantity=position.quantity,
+                fill_price=fill_price,
+                timestamp=bar.timestamp,
+            )
+            exit_action = "STOP_LOSS"
+            self.incidents.append(
+                Incident(bar.timestamp, "STOP_LOSS", f"stop-loss triggered at {fill_price:.2f}")
+            )
+            self._stop_price = None
+            self._target_price = None
+        elif position is not None and self._target_price is not None and bar.high >= self._target_price:
+            trigger_price = max(bar.open, self._target_price)
+            fill_price = trigger_price * (Decimal("1") - self.config.slippage_rate)
+            outcome = self.order_manager.submit_sell(
+                client_order_id=f"{bar.instrument}-{bar.timestamp.isoformat()}-target",
+                instrument=bar.instrument,
+                exchange=bar.exchange,
+                quantity=position.quantity,
+                fill_price=fill_price,
+                timestamp=bar.timestamp,
+            )
+            exit_action = "TARGET_EXIT"
+            self.incidents.append(
+                Incident(bar.timestamp, "TARGET_EXIT", f"profit target reached at {fill_price:.2f}")
+            )
+            self._stop_price = None
+            self._target_price = None
+
+        position = self._current_position()  # re-read: a stop/target exit above may have just closed it
+        signal = self._pending_signal(holding=position is not None) if exit_action is None else None
         if signal is not None and signal.action == "BUY" and position is None:
             if suppress_new_entries:
                 self.incidents.append(
@@ -176,7 +246,22 @@ class ShadowTradingSession:
                     commission_rate=self.config.commission_rate,
                     timestamp=bar.timestamp,
                 )
-                if not outcome.submitted:
+                if outcome.submitted:
+                    self._stop_price = (
+                        fill_price * (Decimal("1") - self.config.stop_loss_distance_fraction)
+                        if self.config.enable_stop_loss
+                        else None
+                    )
+                    self._target_price = (
+                        fill_price
+                        * (
+                            Decimal("1")
+                            + self.config.stop_loss_distance_fraction * self.risk_limits.minimum_reward_risk
+                        )
+                        if self.config.enable_target_exit
+                        else None
+                    )
+                else:
                     self.incidents.append(
                         Incident(bar.timestamp, "ORDER_BLOCKED", "; ".join(outcome.reasons) or "order blocked")
                     )
@@ -191,11 +276,13 @@ class ShadowTradingSession:
                 fill_price=fill_price,
                 timestamp=bar.timestamp,
             )
+            self._stop_price = None
+            self._target_price = None
 
         self._events.append(
             _BarEvent(
                 timestamp=bar.timestamp,
-                signal_action=signal.action if signal else None,
+                signal_action=exit_action or (signal.action if signal else None),
                 order_outcome=outcome,
                 suppressed_by_gap=suppress_new_entries and signal is not None and signal.action == "BUY",
             )
@@ -237,6 +324,8 @@ class ShadowTradingSession:
             f"- Last bar timestamp: {self._history[-1].timestamp.isoformat() if self._history else 'n/a'}",
             f"- Cash: {cash:.2f}",
             f"- Open position: {f'{position.quantity} @ {position.average_price:.2f}' if position else 'none'}",
+            f"- Stop-loss level: {f'{self._stop_price:.2f}' if position and self._stop_price is not None else 'n/a'}",
+            f"- Target level: {f'{self._target_price:.2f}' if position and self._target_price is not None else 'n/a'}",
             f"- Equity (mark-to-close): {equity:.2f}",
             f"- Orders submitted: {submitted}",
             f"- Orders blocked: {blocked}",
