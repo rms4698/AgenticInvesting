@@ -10,6 +10,7 @@ if str(SRC_DIR) not in sys.path:
 
 from agentic_investing.backtesting import BacktestConfig, Backtester
 from agentic_investing.data.models import Bar
+from agentic_investing.risk import RiskLimits
 from agentic_investing.strategies import SmaCrossoverStrategy
 
 
@@ -85,6 +86,40 @@ class BacktesterTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             Backtester().run(bars, SmaCrossoverStrategy())
+
+    def test_kill_switch_trips_on_crash_and_blocks_later_re_entry(self) -> None:
+        # With aggressive sizing (full deployment), BUY@day6 entering at 11
+        # then crashing to 1 by day8 breaches the 12% hard-drawdown kill
+        # switch. SELL@day8 still closes the open position, but the later
+        # BUY@day10 signal must be blocked because the kill switch remains
+        # tripped for the rest of the backtest.
+        bars = make_bars(["10", "9", "8", "9", "10", "11", "1", "1", "5", "8", "10", "15", "20"])
+        aggressive_limits = RiskLimits(
+            account_capital=Decimal("100000"),
+            risk_per_trade_fraction=Decimal("0.5"),
+            max_open_portfolio_risk_fraction=Decimal("0.5"),
+            max_single_position_fraction=Decimal("0.5"),
+            capital_deployment_fraction=Decimal("1.0"),
+        )
+        result = Backtester(
+            BacktestConfig(
+                initial_capital=Decimal("100000"),
+                commission_rate=Decimal("0"),
+                slippage_rate=Decimal("0"),
+                stop_distance_fraction=Decimal("0.05"),
+            ),
+            risk_limits=aggressive_limits,
+        ).run(bars, SmaCrossoverStrategy(fast_period=2, slow_period=3))
+
+        self.assertTrue(result.kill_switch_triggered)
+        self.assertIn("hard drawdown breached", result.kill_switch_reason or "")
+        # Two BUY signals occur, but only the first trade executes; the
+        # second is blocked by the tripped kill switch.
+        self.assertEqual(len(result.trades), 1)
+        self.assertEqual(result.trades[0].entry_price, Decimal("11"))
+        self.assertEqual(result.trades[0].exit_price, Decimal("1"))
+        # No new position opens after the block, so equity stays flat.
+        self.assertEqual(result.equity_curve[-1], result.equity_curve[-2])
 
 
 if __name__ == "__main__":

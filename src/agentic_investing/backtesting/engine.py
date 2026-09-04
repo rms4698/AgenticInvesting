@@ -2,11 +2,11 @@
 
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal
 from typing import Sequence
 
 from agentic_investing.data.models import Bar
-from agentic_investing.risk import RiskLimits
+from agentic_investing.risk import RiskEngine, RiskLimits
 from agentic_investing.strategies import SmaCrossoverStrategy
 
 from .metrics import PerformanceMetrics, calculate_metrics
@@ -51,6 +51,8 @@ class BacktestResult:
     equity_curve: tuple[Decimal, ...]
     trades: tuple[Trade, ...]
     metrics: PerformanceMetrics
+    kill_switch_triggered: bool = False
+    kill_switch_reason: str | None = None
 
 
 @dataclass(slots=True)
@@ -63,7 +65,12 @@ class _OpenPosition:
 
 
 class Backtester:
-    """Run a long-only strategy using next-bar open execution."""
+    """Run a long-only strategy using next-bar open execution.
+
+    Position sizing, kill-switch, and daily/monthly loss gating are delegated
+    to a :class:`~agentic_investing.risk.RiskEngine` so backtests exercise the
+    same deterministic risk decisions intended for later paper/live execution.
+    """
 
     def __init__(self, config: BacktestConfig | None = None, risk_limits: RiskLimits | None = None) -> None:
         self.config = config or BacktestConfig()
@@ -90,10 +97,7 @@ class Backtester:
         if start_index < 0 or start_index >= len(bars):
             raise ValueError("start_index must be within bars")
         self._validate_input(bars)
-        signals = {
-            signal.timestamp: signal
-            for signal in strategy.generate_signals(bars, start_index=start_index)
-        }
+        risk_engine = RiskEngine(self.risk_limits)
         cash = self.config.initial_capital
         equity_curve = [cash]
         position: _OpenPosition | None = None
@@ -101,19 +105,39 @@ class Backtester:
 
         for index in range(start_index, len(bars)):
             bar = bars[index]
-            signal = signals.get(bars[index - 1].timestamp) if index > 0 else None
+            equity_before_bar = cash + (position.quantity * bar.open if position is not None else Decimal("0"))
+            risk_engine.mark_to_market(equity_before_bar, bar.timestamp)
+
+            # The decision is made on the previous (closed) bar, grounded in
+            # the *real* position at that time, and executed at this bar's
+            # open. Asking the strategy fresh each time — rather than trusting
+            # a precomputed signal list — is what prevents the strategy's
+            # notion of "holding" from ever drifting away from what actually
+            # happened (e.g. a BUY that was proposed but blocked by risk
+            # limits or insufficient cash never fools the strategy into
+            # skipping a later, genuine buying opportunity).
+            signal = strategy.decide(bars, index - 1, holding=position is not None) if index > 0 else None
             if signal and signal.action == "BUY" and position is None:
-                fill_price = bar.open * (Decimal("1") + self.config.slippage_rate)
-                quantity = self._entry_quantity(cash, fill_price)
-                if quantity > 0:
-                    entry_value = fill_price * quantity
-                    entry_cost = entry_value * self.config.commission_rate
-                    cash -= entry_value + entry_cost
-                    position = _OpenPosition(bar.instrument, bar.timestamp, quantity, fill_price, entry_cost)
+                decision = risk_engine.evaluate_new_position(equity=equity_before_bar, open_position_count=0)
+                if decision.approved:
+                    fill_price = bar.open * (Decimal("1") + self.config.slippage_rate)
+                    quantity = risk_engine.size_new_position(
+                        cash=cash,
+                        fill_price=fill_price,
+                        stop_distance_fraction=self.config.stop_distance_fraction,
+                        initial_capital=self.config.initial_capital,
+                        commission_rate=self.config.commission_rate,
+                    )
+                    if quantity > 0:
+                        entry_value = fill_price * quantity
+                        entry_cost = entry_value * self.config.commission_rate
+                        cash -= entry_value + entry_cost
+                        position = _OpenPosition(bar.instrument, bar.timestamp, quantity, fill_price, entry_cost)
             elif signal and signal.action == "SELL" and position is not None:
                 trade, cash = self._close_position(position, bar, cash)
                 trades.append(trade)
                 position = None
+
 
             marked_equity = cash
             if position is not None:
@@ -132,16 +156,15 @@ class Backtester:
             trade_pnls=[trade.net_pnl for trade in trades],
             periods_per_year=self.config.periods_per_year,
         )
-        return BacktestResult(self.config.initial_capital, cash, tuple(equity_curve), tuple(trades), metrics)
-
-    def _entry_quantity(self, cash: Decimal, fill_price: Decimal) -> int:
-        risk_budget = min(self.risk_limits.risk_per_trade, self.risk_limits.max_open_portfolio_risk)
-        stop_distance = fill_price * self.config.stop_distance_fraction
-        risk_quantity = int((risk_budget / stop_distance).to_integral_value(rounding=ROUND_DOWN))
-        value_quantity = int((self.risk_limits.max_single_position_fraction * self.config.initial_capital / fill_price).to_integral_value(rounding=ROUND_DOWN))
-        deployment_quantity = int((self.risk_limits.max_deployed_capital / fill_price).to_integral_value(rounding=ROUND_DOWN))
-        cash_quantity = int((cash / (fill_price * (Decimal("1") + self.config.commission_rate))).to_integral_value(rounding=ROUND_DOWN))
-        return max(0, min(risk_quantity, value_quantity, deployment_quantity, cash_quantity))
+        return BacktestResult(
+            self.config.initial_capital,
+            cash,
+            tuple(equity_curve),
+            tuple(trades),
+            metrics,
+            kill_switch_triggered=risk_engine.kill_switch_triggered,
+            kill_switch_reason=risk_engine.kill_switch_reason,
+        )
 
     def _close_position(
         self,

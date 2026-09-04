@@ -4,7 +4,7 @@ Research-first, risk-controlled framework for Indian-market strategy research an
 
 ## Current milestone
 
-This repository currently contains the Phase 0/Phase 1 foundation, Phase 2 data foundation, and Phase 3 backtesting/validation foundation:
+This repository currently contains the Phase 0/Phase 1 foundation, Phase 2 data foundation, Phase 3 backtesting/validation foundation, Phase 4 deterministic risk engine, Phase 5 execution layer (including a real, not-yet-activated Zerodha broker adapter), and an initial Phase 6 shadow-trading capability:
 
 - Agreed scope and risk charter
 - Explicit configurable risk defaults for a ₹1,00,000 account
@@ -29,8 +29,19 @@ This repository currently contains the Phase 0/Phase 1 foundation, Phase 2 data 
 - Kite instrument-token lookup script (`scripts/lookup_kite_instrument.py`)
 - Session-aware `fetch_kite_history.py` (no manual access-token env var needed)
 - End-to-end research evaluation script (`scripts/run_validation.py`)
+- Standalone `RiskEngine`: mark-to-market drawdown tracking, hard-drawdown kill switch (with manual reset + audit log), daily/monthly loss-limit gating, max-open-position limit, and shared position sizing
+- `Backtester` now delegates all sizing and pre-trade gating to `RiskEngine`, so backtests exercise the same deterministic risk decisions intended for later paper/live execution
+- `PaperBroker`: in-memory simulated broker with idempotent orders, no-shorting/insufficient-cash rejection, and position tracking (no live orders, no broker credentials)
+- `OrderManager`: the only sanctioned path from a trading decision to a broker call — every BUY is risk-checked and sized via `RiskEngine` before submission; SELL (position-closing) orders are never blocked by risk limits so capital can always exit a losing position
+- Order-state reconciliation via `OrderManager.reconcile()` and the more thorough `reconcile_startup_state()` (orders, positions, and cash vs. expected state)
+- `KiteBrokerAdapter`: places real CNC/MARKET orders via the official `kiteconnect` client, implementing the same `BrokerAdapter` protocol as `PaperBroker`. Uses a disk-persisted `OrderStore` plus Kite's order `tag` field for restart-safe idempotency — a retried `client_order_id` after a crash is recovered by scanning the broker's order book rather than blindly resubmitted.
 
-There is intentionally **no live trading, broker credential, or order-placement code** yet.
+**This adapter is not wired into any automated or scheduled workflow.** It has been exercised only against a fake Kite client in tests (`tests/test_kite_broker.py`) covering normal fills, rejections, network disconnects mid-placement, and restart recovery — never against a live Zerodha account. Using it against a real account is a deliberate, manual action outside this repository's automation, and should only follow paper/shadow trading per the roadmap.
+- `ShadowTradingSession`: bar-by-bar shadow trading using the same `SmaCrossoverStrategy` + `RiskEngine` + `OrderManager` + `PaperBroker` stack as backtesting, but driven by a live/replayed bar feed instead of a single batch run. Detects data gaps exceeding a configurable tolerance and suppresses new BUY entries during them (SELL/exits are never suppressed); supports an explicit `mark_stale()` call for externally-detected outages (heartbeat, disconnect, token expiry). Produces a deterministic Markdown daily operator report (`daily_report()`) listing bars processed, cash/position/equity, orders submitted/blocked, kill-switch state, and a full incident log.
+- **Position-aware signal generation**: `SmaCrossoverStrategy.decide(bars, index, holding=...)` makes every trading decision statelessly, grounded in the caller's *real* broker/portfolio position rather than an internally remembered belief. This closes a real desync risk: previously, if a proposed BUY was blocked (by risk limits, insufficient cash, or a data outage) the strategy could still believe it held a position and later miss a genuine buying opportunity. `Backtester` and `ShadowTradingSession` both call `decide()` per bar with the real position; `generate_signals()` remains available for direct strategy inspection but is no longer used by any execution path. Verified with dedicated regression tests (`tests/test_shadow_session.py::ShadowSessionPositionAwareDecisionTests`) proving a blocked BUY is correctly retried on the next bar.
+- Replay script `scripts/run_shadow_replay.py` for sanity-checking the session against an already-fetched dataset (verified end-to-end against the real 1,982-bar NIFTYBEES dataset: 33 orders submitted, 0 blocked, 2 correctly detected holiday-gap incidents, kill switch clear)
+
+There is intentionally **no automated live trading**. `KiteBrokerAdapter` can place real orders if a caller wires it to an authenticated `kiteconnect.KiteConnect` instance and calls it directly, but nothing in this repository does that automatically, on a schedule, or without explicit manual invocation.
 
 ## Read-only Kite historical data
 
@@ -84,9 +95,9 @@ The initial baseline is intentionally simple and is not a trading recommendation
 
 ## Planned next milestone
 
-Run these validation modules against properly sourced, authorized historical Indian-market data, review the results and robustness assumptions, then integrate the portfolio/risk engine more deeply before considering a paper broker or Zerodha adapter. See `IMPLEMENTATION_ROADMAP.md` for the complete phased plan.
+Phase 5 (paper broker, risk-gated order manager, real Zerodha broker adapter, restart-safe idempotency, startup reconciliation) and an initial Phase 6 shadow-trading session are implemented and tested. The shadow session has been replayed against real historical NIFTYBEES data but **not yet run against a genuinely live intraday feed**. Remaining work before any live capital: run `ShadowTradingSession` continuously against live market data over an extended observation period (per the roadmap's recommended review window), exercise planned-outage/reconnect scenarios in that live context, and only then consider a small-capital pilot per Phase 8. See `IMPLEMENTATION_ROADMAP.md` for the complete phased plan.
 
-The validation API is available from `agentic_investing.backtesting` through `evaluate_train_test`, `evaluate_walk_forward`, `run_cost_sensitivity`, and `render_validation_report`. The current repository deliberately uses offline fixtures only; no live or broker data is fetched automatically.
+The validation API is available from `agentic_investing.backtesting` through `evaluate_train_test`, `evaluate_walk_forward`, `run_cost_sensitivity`, and `render_validation_report`. The risk engine is available from `agentic_investing.risk` through `RiskEngine`, `RiskDecision`, and `RiskLimits`. The execution layer is available from `agentic_investing.execution` through `OrderManager`, `PaperBroker`, `KiteBrokerAdapter`, `OrderStore`, `reconcile_startup_state`, and the `BrokerAdapter` protocol. Shadow trading is available from `agentic_investing.shadow` through `ShadowTradingSession`, `ShadowSessionConfig`, and `Incident`.
 
 ## Current free-data workflow
 
