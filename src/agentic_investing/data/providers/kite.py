@@ -32,6 +32,23 @@ _MAX_DAYS_PER_REQUEST: dict[Timeframe, int] = {
     "1m": 60,
 }
 
+# Kite labels each candle with the *start* of its interval (e.g. a daily
+# candle is dated at that day's market open, not close). The bar's OHLC is
+# only fully knowable once the interval actually elapses, so available_at
+# must be timestamp + this duration — never equal to timestamp itself, which
+# would assert the whole candle (including its close/high/low) was knowable
+# at the instant the interval began. This is what data/validation.py's
+# LOOKAHEAD_RISK check (available_at < timestamp) is meant to catch, but that
+# check cannot detect available_at == timestamp, so getting this duration
+# right is essential.
+_INTERVAL_DURATION: dict[Timeframe, timedelta] = {
+    "1d": timedelta(days=1),
+    "1h": timedelta(hours=1),
+    "15m": timedelta(minutes=15),
+    "5m": timedelta(minutes=5),
+    "1m": timedelta(minutes=1),
+}
+
 
 class KiteHistoricalDataProvider:
     """Map Kite historical candles into canonical, UTC-normalized bars.
@@ -106,7 +123,7 @@ def _to_bar(candle: dict[str, Any], symbol: str, exchange: str, timeframe: Timef
         exchange=exchange.upper(),
         timeframe=timeframe,
         timestamp=timestamp,
-        available_at=timestamp,
+        available_at=timestamp + _INTERVAL_DURATION[timeframe],
         open=Decimal(str(candle["open"])),
         high=Decimal(str(candle["high"])),
         low=Decimal(str(candle["low"])),

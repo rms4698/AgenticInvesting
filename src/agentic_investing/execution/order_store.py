@@ -9,19 +9,29 @@ book by tag to discover whether the order actually reached the exchange
 before deciding whether a retry is safe.
 """
 
+import hashlib
 import json
-import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 
 def derive_tag(client_order_id: str) -> str:
-    """Derive a Kite-compatible tag (alphanumeric, max 20 chars) for lookup."""
+    """Derive a Kite-compatible tag (alphanumeric, max 20 chars) for lookup.
 
-    sanitized = re.sub(r"[^A-Za-z0-9]", "", client_order_id)
-    if not sanitized:
-        raise ValueError("client_order_id must contain at least one alphanumeric character")
-    return sanitized[:20]
+    Uses a SHA-256 hash rather than truncating a sanitized client_order_id.
+    Truncating after stripping non-alphanumerics can collide for genuinely
+    different orders — e.g. two client_order_ids that differ only in their
+    time component or a trailing "-buy"/"-sell" suffix beyond the 20th
+    alphanumeric character would otherwise derive the identical tag. A
+    hex-digest prefix is deterministic (same input always maps to the same
+    tag, so restart recovery still works) and has negligible collision risk
+    for the number of orders this platform will ever place.
+    """
+
+    if not client_order_id.strip():
+        raise ValueError("client_order_id must not be empty")
+    digest = hashlib.sha256(client_order_id.encode("utf-8")).hexdigest()
+    return digest[:20]
 
 
 @dataclass(slots=True)
@@ -54,6 +64,11 @@ class OrderStore:
 
     def get(self, client_order_id: str) -> OrderStoreEntry | None:
         return self._entries.get(client_order_id)
+
+    def all_entries(self) -> dict[str, OrderStoreEntry]:
+        """Return a copy of all tracked entries, keyed by client_order_id."""
+
+        return dict(self._entries)
 
     def begin_attempt(self, client_order_id: str) -> OrderStoreEntry:
         """Persist that an order attempt is starting, before calling the broker."""

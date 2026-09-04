@@ -30,6 +30,7 @@ class RiskEngine:
     def __init__(self, limits: RiskLimits) -> None:
         self.limits = limits
         self._peak_equity: Decimal | None = None
+        self._current_equity: Decimal | None = None
         self._current_date: date | None = None
         self._current_month: tuple[int, int] | None = None
         self._daily_start_equity: Decimal | None = None
@@ -64,6 +65,7 @@ class RiskEngine:
         day = timestamp.date()
         month = (timestamp.year, timestamp.month)
 
+        self._current_equity = equity
         self._peak_equity = equity if self._peak_equity is None else max(self._peak_equity, equity)
         if self._current_date != day:
             self._current_date = day
@@ -82,17 +84,23 @@ class RiskEngine:
                 )
 
     def reset_kill_switch(self, *, reason: str) -> None:
-        """Manually clear a tripped kill switch. Requires an explicit reason."""
+        """Manually clear a tripped kill switch. Requires an explicit reason.
+
+        Re-baselines peak equity to the *current* equity so the switch does
+        not immediately re-trip on the same drawdown level. This is a
+        deliberate risk decision: after reset, further drawdown is measured
+        from the depressed level at reset time, not from the original peak.
+        The prior drawdown is not erased from history — it is recorded in
+        ``reset_log`` — only the forward-looking trigger threshold moves.
+        """
 
         if not reason.strip():
             raise ValueError("a non-empty reason is required to reset the kill switch")
         self._reset_log.append(reason.strip())
         self._kill_switch_triggered = False
         self._kill_switch_reason = None
-        # Re-baseline peak equity to the current mark so a reset does not
-        # immediately re-trip on the same drawdown level.
-        if self._peak_equity is not None and self._daily_start_equity is not None:
-            self._peak_equity = max(self._peak_equity, self._daily_start_equity)
+        if self._current_equity is not None:
+            self._peak_equity = self._current_equity
 
     def evaluate_new_position(self, *, equity: Decimal, open_position_count: int) -> RiskDecision:
         """Decide whether a new position may be opened at the given equity."""

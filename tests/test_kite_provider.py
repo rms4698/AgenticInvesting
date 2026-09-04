@@ -2,7 +2,7 @@ import json
 import sys
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -41,7 +41,11 @@ class KiteProviderTests(unittest.TestCase):
 
         self.assertEqual(len(bars), 2)
         self.assertEqual(bars[0].timestamp.isoformat(), "2026-08-31T04:30:00+00:00")
-        self.assertEqual(bars[0].available_at, bars[0].timestamp)
+        # available_at must be strictly after timestamp by the interval's
+        # duration (here, one day for daily bars) — never equal to it, which
+        # would assert the whole candle's OHLC was knowable at the instant
+        # the interval began.
+        self.assertEqual(bars[0].available_at, bars[0].timestamp + timedelta(days=1))
         self.assertEqual(bars[0].close, Decimal("101"))
         self.assertEqual(len(digest), 64)
         self.assertEqual(client.calls[0][3], "day")

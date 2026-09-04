@@ -55,6 +55,37 @@ class RiskEngineMarkToMarketTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             engine.reset_kill_switch(reason="   ")
 
+    def test_reset_does_not_immediately_re_trip_at_the_same_depressed_equity(self) -> None:
+        """Regression: reset must re-baseline peak to current equity.
+
+        Before the fix, reset_kill_switch computed
+        max(peak_equity, daily_start_equity) — but peak_equity is already the
+        running maximum of every observed equity value, so it is always >=
+        any single historical sample including daily_start_equity. That made
+        the "re-baseline" a mathematical no-op: the very next mark_to_market
+        call at the same still-depressed equity would recompute the same
+        breaching drawdown and immediately re-trip the switch, defeating the
+        entire purpose of a manual reset.
+        """
+
+        engine = make_engine(account_capital=Decimal("100000"), hard_drawdown_fraction=Decimal("0.12"))
+        t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        engine.mark_to_market(Decimal("100000"), t0)
+        engine.mark_to_market(Decimal("85000"), t0)  # 15% drawdown, trips
+        self.assertTrue(engine.kill_switch_triggered)
+
+        engine.reset_kill_switch(reason="manual review completed")
+        self.assertFalse(engine.kill_switch_triggered)
+
+        # Mark to market again at the SAME still-depressed equity level.
+        # Before the fix, this would immediately re-trip the switch.
+        engine.mark_to_market(Decimal("85000"), t0)
+        self.assertFalse(engine.kill_switch_triggered)
+
+        # A further drawdown from the new (reset) baseline must still trip.
+        engine.mark_to_market(Decimal("74800"), t0)  # 12% below 85000
+        self.assertTrue(engine.kill_switch_triggered)
+
 
 class RiskEngineLossLimitTests(unittest.TestCase):
     def test_daily_loss_limit_blocks_new_positions(self) -> None:

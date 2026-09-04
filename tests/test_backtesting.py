@@ -121,6 +121,42 @@ class BacktesterTests(unittest.TestCase):
         # No new position opens after the block, so equity stays flat.
         self.assertEqual(result.equity_curve[-1], result.equity_curve[-2])
 
+    def test_forced_final_bar_exit_uses_close_with_slippage_and_no_duplicate_point(self) -> None:
+        """Regression: ending the backtest while still holding a position.
+
+        Before the fix, force-closing appended a *second* equity-curve point
+        for the same final-bar timestamp (corrupting period-return-based
+        metrics), used the last bar's *open* with slippage as the exit price
+        (inconsistent with the close-based mark-to-market moments earlier in
+        the same iteration), and paid *zero* slippage if the position had
+        been entered on that very last bar. The fix always exits at the last
+        bar's close with the same slippage as every other exit, and replaces
+        (rather than appends to) the final mark-to-market equity point.
+        """
+
+        bars = make_bars(["10", "9", "8", "9", "10", "11"])  # BUY signal at day5, no SELL before data ends
+        config = BacktestConfig(
+            initial_capital=Decimal("100000"),
+            commission_rate=Decimal("0"),
+            slippage_rate=Decimal("0.01"),
+            stop_distance_fraction=Decimal("0.05"),
+        )
+        result = Backtester(config).run(bars, SmaCrossoverStrategy(fast_period=2, slow_period=3))
+
+        self.assertEqual(len(result.trades), 1)
+        trade = result.trades[0]
+        # Exit priced at the last bar's close with slippage, same basis as
+        # every other exit in the system.
+        expected_exit_price = Decimal("11") * (Decimal("1") - Decimal("0.01"))
+        self.assertEqual(trade.exit_price, expected_exit_price)
+        self.assertEqual(trade.exit_time, bars[-1].timestamp)
+        # Exactly one equity-curve point per bar plus the initial point — no
+        # extra spurious point appended for the forced-close event.
+        self.assertEqual(len(result.equity_curve), len(bars) + 1)
+        # The final point is the realized post-liquidation cash, not the
+        # unrealized close-mark value that was there before the forced exit.
+        self.assertEqual(result.equity_curve[-1], result.final_capital)
+
 
 if __name__ == "__main__":
     unittest.main()

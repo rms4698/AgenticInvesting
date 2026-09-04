@@ -131,13 +131,15 @@ class OrderManager:
         return tuple(issues)
 
     def _place(self, request: OrderRequest, *, fill_price: Decimal, timestamp: datetime | None) -> Order:
-        place = getattr(self._broker, "place_order")
-        try:
-            return place(request, fill_price=fill_price, timestamp=timestamp)
-        except TypeError:
-            # Real broker adapters (e.g. Zerodha) will not accept a simulated
-            # fill price; they only accept the request itself.
-            return place(request)
+        """Place via the broker.
+
+        ``fill_price``/``timestamp`` are always passed; ``BrokerAdapter``
+        declares them as optional keyword-only parameters so simulation
+        adapters (``PaperBroker``) can use them for deterministic fills while
+        real broker adapters (``KiteBrokerAdapter``) accept and ignore them.
+        """
+
+        return self._broker.place_order(request, fill_price=fill_price, timestamp=timestamp)
 
     @staticmethod
     def _rejection_reasons(order: Order) -> tuple[str, ...]:

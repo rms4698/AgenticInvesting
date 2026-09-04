@@ -145,9 +145,18 @@ class Backtester:
             equity_curve.append(marked_equity)
 
         if position is not None:
-            trade, cash = self._close_position(position, bars[-1], cash, force_close=True)
+            # Force-close at the last bar's close (the last known price),
+            # with the same exit slippage every other exit pays, for
+            # consistent cost modeling. This bar's equity_curve point was
+            # already appended above as an *unrealized* mark-to-market value
+            # (cash + quantity * close); replace that same point with the
+            # *realized* post-liquidation cash value rather than appending a
+            # second, spurious point for the same timestamp — appending would
+            # corrupt period-return-based metrics (volatility/Sharpe) with an
+            # extra "return" that does not correspond to any elapsed period.
+            trade, cash = self._close_position(position, bars[-1], cash, at_open=False)
             trades.append(trade)
-            equity_curve.append(cash)
+            equity_curve[-1] = cash
 
         metrics = calculate_metrics(
             initial_capital=self.config.initial_capital,
@@ -171,10 +180,20 @@ class Backtester:
         position: _OpenPosition,
         bar: Bar,
         cash: Decimal,
-        force_close: bool = False,
+        *,
+        at_open: bool = True,
     ) -> tuple[Trade, Decimal]:
-        del force_close  # Force-closing is represented by the final-bar event itself.
-        exit_price = bar.open * (Decimal("1") - self.config.slippage_rate) if bar.timestamp != position.entry_time else bar.close
+        """Close a position and realize its trade.
+
+        ``at_open=True`` (the normal, signal-driven exit) prices at this
+        bar's open with slippage, matching next-bar-open execution timing.
+        ``at_open=False`` is used only for a forced end-of-backtest
+        liquidation, pricing at this bar's close with the same slippage —
+        never at an unrealistically slippage-free close, and never mixing
+        entry/exit timing bases within one trade.
+        """
+
+        exit_price = (bar.open if at_open else bar.close) * (Decimal("1") - self.config.slippage_rate)
         exit_value = exit_price * position.quantity
         exit_cost = exit_value * self.config.commission_rate
         gross_pnl = (exit_price - position.entry_price) * position.quantity

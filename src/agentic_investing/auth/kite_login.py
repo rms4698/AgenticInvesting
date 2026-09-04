@@ -99,21 +99,33 @@ def save_session(session: KiteSession, path: str | Path | None = None) -> Path:
 
 
 def load_session(path: str | Path | None = None) -> KiteSession | None:
-    """Load a locally stored session, returning None for missing/invalid data."""
+    """Load a locally stored session, returning None for missing/invalid data.
+
+    A genuine I/O failure (permission denied, disk error, locked file) is
+    deliberately NOT treated the same as "no session file exists" — it is
+    allowed to propagate, since silently returning None for both would look
+    identical to a caller (triggering an unnecessary and repeated re-login)
+    while hiding a real, actionable root cause (e.g. a broken ACL from
+    ``_restrict_windows_acl``). Only errors indicating the *content* is
+    missing or malformed return None.
+    """
 
     source = Path(path) if path else session_path()
     if not source.exists():
         return None
+    text = source.read_text(encoding="utf-8")  # OSError here propagates.
     try:
-        payload = json.loads(source.read_text(encoding="utf-8"))
+        payload = json.loads(text)
         access_token = str(payload["access_token"])
         api_key = str(payload["api_key"])
         generated_at = datetime.fromisoformat(payload["generated_at"])
-    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if generated_at.tzinfo is None:
         return None
     if not access_token or not api_key:
         return None
-    return KiteSession(access_token, api_key, generated_at)
+    return KiteSession(access_token, api_key, generated_at.astimezone(timezone.utc))
 
 
 def _read_windows_user_environment(name: str) -> str | None:

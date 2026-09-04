@@ -16,7 +16,6 @@ venv/
 data/raw/
 data/processed/
 data/real/
-data/yahoo/
 reports/
 *.db
 

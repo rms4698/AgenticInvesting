@@ -15,7 +15,7 @@ position it doesn't — the next bar's decision is always grounded in truth.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Sequence
 
@@ -106,10 +106,29 @@ class ShadowTradingSession:
             raise ValueError("a non-empty reason is required")
         self._explicit_stale = True
         self._explicit_stale_reason = reason.strip()
-        self.incidents.append(Incident(datetime.now(), "MANUAL_STALE", reason.strip()))
+        self.incidents.append(Incident(datetime.now(timezone.utc), "MANUAL_STALE", reason.strip()))
 
     def on_bar(self, bar: Bar) -> None:
-        """Process one new bar: detect gaps, mark to market, act on signals."""
+        """Process one new bar: detect gaps, mark to market, act on signals.
+
+        Raises if fed a bar for a different instrument/exchange than any
+        prior bar in this session. ``_current_position()`` assumes exactly
+        one instrument may be held at a time; silently allowing a second
+        instrument would let it return the wrong position (wrong quantity,
+        wrong average price) for whichever instrument's bar happens to be
+        processed, which is exactly the "belief desyncs from real broker
+        state" bug class this session exists to avoid.
+        """
+
+        if self._history and (bar.instrument, bar.exchange) != (
+            self._history[0].instrument,
+            self._history[0].exchange,
+        ):
+            raise ValueError(
+                "ShadowTradingSession supports exactly one instrument per session; "
+                f"expected {self._history[0].exchange}:{self._history[0].instrument}, "
+                f"got {bar.exchange}:{bar.instrument}"
+            )
 
         gap_detected = False
         if self._last_bar_timestamp is not None:

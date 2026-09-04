@@ -2,6 +2,5 @@
 
 from .base import HistoricalDataProvider
 from .kite import KiteHistoricalDataProvider
-from .yahoo import YahooFinanceDataProvider
 
-__all__ = ["HistoricalDataProvider", "KiteHistoricalDataProvider", "YahooFinanceDataProvider"]
+__all__ = ["HistoricalDataProvider", "KiteHistoricalDataProvider"]

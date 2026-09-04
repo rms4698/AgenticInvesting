@@ -50,8 +50,18 @@ class FakeKiteClient:
             "exchange_timestamp": datetime.now(timezone.utc),
             "tradingsymbol": kwargs["tradingsymbol"],
             "exchange": kwargs["exchange"],
+            "transaction_type": kwargs["transaction_type"],
+            "quantity": kwargs["quantity"],
         }
         return order_id
+
+    def set_order_state(self, order_id: str, *, status: str, filled_quantity: int, average_price: float) -> None:
+        """Test hook to simulate the broker reporting updated fill state."""
+
+        row = self._orders[order_id]
+        row["status"] = status
+        row["filled_quantity"] = filled_quantity
+        row["average_price"] = average_price
 
     def cancel_order(self, variety: str, order_id: str) -> str:
         self._orders[order_id]["status"] = "CANCELLED"
@@ -198,6 +208,121 @@ class KiteBrokerAdapterRestartRecoveryTests(unittest.TestCase):
             self.assertEqual(order.status, OrderStatus.SUBMITTED)
             self.assertEqual(len(client.place_calls), 1)
             self.assertEqual(client.place_calls[0]["tag"], derive_tag("order-1"))
+
+
+class KiteBrokerAdapterPartialFillTests(unittest.TestCase):
+    """Regression tests for the stale-partial-fill bug.
+
+    Before the fix, _apply_broker_state only ever recorded a Fill once (`if
+    ... and not order.fills`). A partial fill recorded on the first
+    refresh_order() call would never be updated on a later call even after
+    the order fully filled, leaving Order.filled_quantity/average_fill_price
+    permanently desynced from the broker's true cumulative state.
+    """
+
+    def test_refresh_after_partial_then_full_fill_updates_quantity_and_price(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = OrderStore(Path(temp_dir) / "orders.json")
+            client = FakeKiteClient()
+            adapter = KiteBrokerAdapter(client, store)
+            order = adapter.place_order(make_request())
+            broker_order_id = order.broker_order_id
+            assert broker_order_id is not None
+
+            # Simulate a partial fill (5 of 10) reported by a first refresh.
+            client.set_order_state(broker_order_id, status="OPEN", filled_quantity=5, average_price=100.0)
+            first_refresh = adapter.refresh_order("order-1")
+            assert first_refresh is not None
+            self.assertEqual(first_refresh.filled_quantity, 5)
+            self.assertEqual(first_refresh.average_fill_price, Decimal("100.0"))
+
+            # The order later fully fills at a different average price.
+            client.set_order_state(broker_order_id, status="COMPLETE", filled_quantity=10, average_price=101.5)
+            second_refresh = adapter.refresh_order("order-1")
+            assert second_refresh is not None
+            self.assertEqual(second_refresh.status, OrderStatus.FILLED)
+            self.assertEqual(second_refresh.filled_quantity, 10)
+            self.assertEqual(second_refresh.average_fill_price, Decimal("101.5"))
+
+
+class KiteBrokerAdapterHydrateTests(unittest.TestCase):
+    """Regression tests for the empty-cache-after-restart reconciliation gap.
+
+    Before the fix, list_orders() only ever returned the in-memory
+    self._orders dict, which is always empty in a freshly-started process —
+    even if genuinely non-terminal orders exist at the broker. reconcile()
+    and reconcile_startup_state() both rely on list_orders(), so right after
+    a restart they would report zero issues even with real open orders,
+    giving false confidence that it is safe to resume trading.
+    """
+
+    def test_hydrate_populates_non_terminal_orders_after_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store_path = Path(temp_dir) / "orders.json"
+            client = FakeKiteClient()
+
+            # First "process": place an order that remains open (not yet filled).
+            first_store = OrderStore(store_path)
+            first_adapter = KiteBrokerAdapter(client, first_store)
+            order = first_adapter.place_order(make_request())
+            assert order.broker_order_id is not None
+            client.set_order_state(order.broker_order_id, status="OPEN", filled_quantity=0, average_price=0)
+
+            # Before hydration, a brand-new process's cache is empty.
+            second_store = OrderStore(store_path)
+            second_adapter = KiteBrokerAdapter(client, second_store)
+            self.assertEqual(second_adapter.list_orders(), ())
+
+            # After hydration, the non-terminal order must be visible again.
+            second_adapter.hydrate()
+            orders = second_adapter.list_orders()
+            self.assertEqual(len(orders), 1)
+            self.assertFalse(orders[0].status.is_terminal)
+
+    def test_reconcile_after_hydrate_detects_lingering_open_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store_path = Path(temp_dir) / "orders.json"
+            client = FakeKiteClient()
+            first_store = OrderStore(store_path)
+            first_adapter = KiteBrokerAdapter(client, first_store)
+            order = first_adapter.place_order(make_request())
+            assert order.broker_order_id is not None
+            client.set_order_state(order.broker_order_id, status="OPEN", filled_quantity=0, average_price=0)
+
+            second_store = OrderStore(store_path)
+            second_adapter = KiteBrokerAdapter(client, second_store)
+            second_adapter.hydrate()
+
+            report = reconcile_startup_state(second_adapter, expected_positions={}, expected_cash=Decimal("100000"))
+            self.assertFalse(report.is_clean)
+            self.assertTrue(any("non-terminal" in issue for issue in report.non_terminal_orders))
+
+
+class DeriveTagCollisionTests(unittest.TestCase):
+    """Regression tests for the truncation-collision bug in derive_tag.
+
+    Before the fix, derive_tag stripped non-alphanumerics then truncated to
+    20 characters. client_order_ids like
+    "NIFTYBEES-2026-01-01T09:15:00+00:00-buy" and
+    "NIFTYBEES-2026-01-01T09:16:00+00:00-sell" (differing only after the
+    20th alphanumeric character) would collide on the identical tag, causing
+    _recover_from_broker to potentially attribute the wrong order/fill during
+    restart recovery.
+    """
+
+    def test_similar_ids_differing_only_after_20_chars_do_not_collide(self) -> None:
+        buy_id = "NIFTYBEES-2026-01-01T09:15:00+00:00-buy"
+        sell_id = "NIFTYBEES-2026-01-01T09:16:00+00:00-sell"
+
+        self.assertNotEqual(derive_tag(buy_id), derive_tag(sell_id))
+
+    def test_same_id_always_derives_the_same_tag(self) -> None:
+        client_order_id = "NIFTYBEES-2026-01-01T09:15:00+00:00-buy"
+        self.assertEqual(derive_tag(client_order_id), derive_tag(client_order_id))
+
+    def test_empty_client_order_id_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            derive_tag("")
 
 
 class ReconciliationTests(unittest.TestCase):

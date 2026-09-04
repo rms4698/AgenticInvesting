@@ -242,5 +242,25 @@ class ShadowSessionPositionAwareDecisionTests(unittest.TestCase):
         self.assertIsNone(held_call)
 
 
+class ShadowSessionInstrumentGuardTests(unittest.TestCase):
+    """Regression test for the missing single-instrument guard.
+
+    Before the fix, _current_position() returned whichever position happened
+    to be first in the broker's dict-derived tuple, with no check that on_bar
+    was only ever fed one instrument. Feeding bars for a second instrument
+    could silently return the wrong instrument's holding/quantity to
+    strategy.decide() and to SELL sizing — exactly the "belief desyncs from
+    real state" bug class this session exists to prevent.
+    """
+
+    def test_second_instrument_bar_is_rejected(self) -> None:
+        session = make_session()
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        session.on_bar(make_bar("TEST", start, "10"))
+
+        with self.assertRaises(ValueError):
+            session.on_bar(make_bar("OTHER", start + timedelta(days=1), "20"))
+
+
 if __name__ == "__main__":
     unittest.main()
