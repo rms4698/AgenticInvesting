@@ -32,13 +32,12 @@ import dataclasses
 import json
 import os
 from dataclasses import dataclass
-from typing import Any, Protocol, cast
-
-import anthropic
+from typing import Any
 
 from agentic_investing.config import load_prompt
 from agentic_investing.logging_config import get_logger
 
+from .providers import AnthropicModelClient, ModelClient, NormalizedMessage
 from .tools import AgentToolkit, build_anthropic_tool_schemas
 
 DEFAULT_MODEL = "claude-sonnet-4-5"
@@ -54,47 +53,9 @@ SYSTEM_PROMPT_FILE = "agent_system.md"
 TASK_PROMPT_FILE = "agent_task.md"
 
 
-class AnthropicMessage(Protocol):
-    """The minimal shape of an Anthropic ``Message`` response used here."""
-
-    content: list[Any]
-    stop_reason: str | None
-
-
-class AnthropicClient(Protocol):
-    """The minimal Anthropic SDK surface this runner depends on."""
-
-    def create_message(
-        self, *, model: str, max_tokens: int, system: str, messages: list[dict[str, Any]], tools: tuple[dict[str, Any], ...]
-    ) -> AnthropicMessage: ...
-
-
-class RealAnthropicClient:
-    """Thin adapter over ``anthropic.Anthropic`` matching the ``AnthropicClient`` protocol."""
-
-    def __init__(self, *, api_key: str | None = None) -> None:
-        resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        if not resolved_key:
-            raise ValueError("Anthropic API key not provided. Pass api_key= or set ANTHROPIC_API_KEY.")
-        self._client = anthropic.Anthropic(api_key=resolved_key)
-
-    def create_message(
-        self, *, model: str, max_tokens: int, system: str, messages: list[dict[str, Any]], tools: tuple[dict[str, Any], ...]
-    ) -> AnthropicMessage:
-        # The real SDK's TypedDict-based request/response types are far more
-        # specific than the small structural Protocol this runner depends
-        # on (AnthropicMessage/AnthropicClient) — that Protocol is the
-        # deliberately narrow surface tests fake against. Casting here keeps
-        # the SDK's own strict typing from leaking into the rest of this
-        # module while still calling the real, correctly-typed SDK method.
-        response = self._client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            system=system,
-            messages=cast(Any, messages),
-            tools=cast(Any, list(tools)),
-        )
-        return cast(AnthropicMessage, response)
+AnthropicMessage = NormalizedMessage
+AnthropicClient = ModelClient
+RealAnthropicClient = AnthropicModelClient
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,12 +92,24 @@ class AgentRunner:
     crowding out another's within Claude's context window.
     """
 
-    def __init__(self, *, toolkit: AgentToolkit, client: AnthropicClient, config: AgentRunConfig | None = None) -> None:
+    def __init__(self, *, toolkit: AgentToolkit, client: ModelClient, config: AgentRunConfig | None = None) -> None:
         self.toolkit = toolkit
         self.client = client
         self.config = config or AgentRunConfig()
         self._logger = get_logger(__name__)
-        self._system_prompt = load_prompt(SYSTEM_PROMPT_FILE)
+        research_instructions = (
+            "Use the native web-search tool for current Indian news, company announcements, "
+            "financial results, corporate actions, and fundamentals. Prefer authoritative "
+            "sources such as NSE/BSE notices, company filings, investor-relations pages, "
+            "and established Indian financial publications. Search multiple independent "
+            "sources when the information could materially affect a trade. Treat search "
+            "results as evidence requiring source and date checking."
+            if self.config.enable_web_search
+            else "Current web research is unavailable for this provider. Do not invent current news or fundamentals; if current information is needed but unavailable, prefer HOLD."
+        )
+        self._system_prompt = load_prompt(SYSTEM_PROMPT_FILE).format(
+            research_instructions=research_instructions
+        )
         # Derived once from the toolkit's own method signatures — see
         # build_anthropic_tool_schemas()'s docstring for why this is never
         # hand-maintained. Recomputed per-instance (not module-level) so a

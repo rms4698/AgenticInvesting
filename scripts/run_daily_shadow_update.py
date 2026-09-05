@@ -41,6 +41,7 @@ for path in (SRC, SCRIPTS):
 from agentic_investing.data import load_bars_json
 from agentic_investing.data.ingestion import ingest_historical_bars
 from agentic_investing.data.providers.kite import KiteHistoricalDataProvider
+from agentic_investing.auth import authenticate_kite
 from agentic_investing.shadow import ShadowSessionConfig, ShadowTradingSession
 from agentic_investing.strategies import SmaCrossoverStrategy
 
@@ -138,8 +139,6 @@ def main() -> int:
     credentials = _resolve_credentials()
     if credentials is None and args.auto_login:
         print("No fresh Kite session found; starting interactive login...")
-        from agentic_investing.auth import authenticate_kite
-
         session = authenticate_kite()
         credentials = (session.api_key, session.access_token)
     if credentials is None:

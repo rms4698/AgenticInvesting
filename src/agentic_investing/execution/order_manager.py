@@ -85,7 +85,7 @@ class OrderManager:
             quantity=quantity,
         )
         order = self._place(request, fill_price=fill_price, timestamp=timestamp)
-        self._logger.info("buy_order_outcome client_order_id=%s status=%s", client_order_id, order.status)
+        self._logger.debug("buy_order_outcome client_order_id=%s status=%s", client_order_id, order.status)
         return OrderOutcome(submitted=order.status != OrderStatus.REJECTED, order=order, reasons=self._rejection_reasons(order))
 
     def submit_sell(
@@ -117,7 +117,7 @@ class OrderManager:
             quantity=quantity,
         )
         order = self._place(request, fill_price=fill_price, timestamp=timestamp)
-        self._logger.info("sell_order_outcome client_order_id=%s status=%s", client_order_id, order.status)
+        self._logger.debug("sell_order_outcome client_order_id=%s status=%s", client_order_id, order.status)
         return OrderOutcome(submitted=order.status != OrderStatus.REJECTED, order=order, reasons=self._rejection_reasons(order))
 
     def reconcile(self) -> tuple[str, ...]:

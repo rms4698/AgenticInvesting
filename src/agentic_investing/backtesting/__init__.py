@@ -17,6 +17,7 @@ from .evaluation import (
     run_cost_sensitivity,
 )
 from .metrics import PerformanceMetrics, calculate_metrics
+from .selection import StrategyCandidate, StrategyScore, StrategySelection, compare_strategies
 
 __all__ = [
     "BacktestConfig",
@@ -25,6 +26,9 @@ __all__ = [
     "CostScenario",
     "CostSensitivityResult",
     "PerformanceMetrics",
+    "StrategyCandidate",
+    "StrategyScore",
+    "StrategySelection",
     "Trade",
     "ValidationReport",
     "WalkForwardRun",
@@ -38,4 +42,5 @@ __all__ = [
     "run_buy_and_hold",
     "run_cash_benchmark",
     "run_cost_sensitivity",
+    "compare_strategies",
 ]

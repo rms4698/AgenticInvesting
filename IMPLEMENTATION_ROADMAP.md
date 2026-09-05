@@ -1,5 +1,7 @@
 # Agentic Investing Platform — India
 
+Document ownership is defined in [`docs/documentation-map.md`](docs/documentation-map.md): this file owns phased implementation, deliverables, and exit gates. It is not a current-state changelog or a contributor-rules document.
+
 ## Purpose
 
 This document is the implementation reference for building a research-first, risk-controlled algorithmic investing and trading platform for Indian markets using a Zerodha account.

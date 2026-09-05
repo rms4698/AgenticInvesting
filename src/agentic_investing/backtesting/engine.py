@@ -7,7 +7,7 @@ from typing import Sequence
 
 from agentic_investing.data.models import Bar
 from agentic_investing.risk import RiskEngine, RiskLimits
-from agentic_investing.strategies import SmaCrossoverStrategy
+from agentic_investing.strategies import TradingStrategy
 
 from .metrics import PerformanceMetrics, calculate_metrics
 
@@ -116,7 +116,7 @@ class Backtester:
     def run(
         self,
         bars: Sequence[Bar],
-        strategy: SmaCrossoverStrategy,
+        strategy: TradingStrategy,
         *,
         start_index: int = 0,
     ) -> BacktestResult:

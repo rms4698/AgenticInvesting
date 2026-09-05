@@ -33,6 +33,10 @@ class SmaCrossoverStrategy:
         if self.slow_period <= self.fast_period:
             raise ValueError("slow_period must be greater than fast_period")
 
+    @property
+    def warmup_period(self) -> int:
+        return self.slow_period
+
     @staticmethod
     def _average(values: Sequence[Decimal]) -> Decimal:
         return sum(values, Decimal("0")) / Decimal(len(values))

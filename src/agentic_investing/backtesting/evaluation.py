@@ -7,7 +7,7 @@ from typing import Sequence
 from agentic_investing.data.models import Bar
 from agentic_investing.backtesting.engine import Trade
 from agentic_investing.backtesting.metrics import calculate_metrics
-from agentic_investing.strategies import SmaCrossoverStrategy
+from agentic_investing.strategies import TradingStrategy
 
 from .engine import BacktestConfig, BacktestResult, Backtester
 
@@ -164,7 +164,7 @@ def _evaluation_slice(
 
 def evaluate_train_test(
     bars: Sequence[Bar],
-    strategy: SmaCrossoverStrategy,
+    strategy: TradingStrategy,
     *,
     split: int | float,
     config: BacktestConfig | None = None,
@@ -179,7 +179,7 @@ def evaluate_train_test(
     split_result = chronological_split(bars, split)
     backtester = Backtester(config)
     train_result = backtester.run(split_result.train, strategy)
-    context_start = max(0, split_result.split_index - strategy.slow_period + 1)
+    context_start = max(0, split_result.split_index - strategy.warmup_period + 1)
     test_bars, test_start = _evaluation_slice(
         bars,
         context_start=context_start,
@@ -209,7 +209,7 @@ def evaluate_train_test(
 
 def evaluate_walk_forward(
     bars: Sequence[Bar],
-    strategy: SmaCrossoverStrategy,
+    strategy: TradingStrategy,
     *,
     train_size: int,
     test_size: int,
@@ -281,7 +281,7 @@ def run_cash_benchmark(
 
 def run_cost_sensitivity(
     bars: Sequence[Bar],
-    strategy: SmaCrossoverStrategy,
+    strategy: TradingStrategy,
     *,
     scenarios: Sequence[CostScenario],
     config: BacktestConfig | None = None,

@@ -14,6 +14,7 @@ in this project uses.
 
 from .executor import ProposalExecutor, ProposalExecutorConfig, ProposalResult
 from .proposal import ProposalAction, TradeProposal
+from .providers import ModelClient, OpenAICompatibleModelClient, create_model_client
 from .runner import AgentRunConfig, AgentRunner, AnthropicClient, InstrumentRunResult, RealAnthropicClient
 from .tools import AgentToolkit
 
@@ -23,10 +24,13 @@ __all__ = [
     "AgentToolkit",
     "AnthropicClient",
     "InstrumentRunResult",
+    "ModelClient",
+    "OpenAICompatibleModelClient",
     "ProposalAction",
     "ProposalExecutor",
     "ProposalExecutorConfig",
     "ProposalResult",
     "RealAnthropicClient",
+    "create_model_client",
     "TradeProposal",
 ]

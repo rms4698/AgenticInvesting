@@ -1,5 +1,7 @@
 # AgenticInvesting Engineering Guidance
 
+This file owns contributor and coding-agent rules. See `docs/documentation-map.md` for the ownership boundary between this guidance, `README.md`, the roadmap, prompts, decisions, and generated reports.
+
 ## Mission
 
 Build an industry-standard, world-class Python application for research-first, risk-controlled Indian-market investing through Zerodha. Risk reduction is always the first priority; profit is secondary. The 2% monthly figure is only a soft aspiration and must never force a trade.
@@ -36,7 +38,7 @@ Build an industry-standard, world-class Python application for research-first, r
 ## Data-source policy
 
 - Use Zerodha Kite Connect as the broker-authoritative market-data source for OHLCV and execution state.
-- Use Claude's native web search for current Indian news, filings, corporate announcements, and ad-hoc fundamentals. Prefer primary or authoritative sources and require source/date-aware reasoning.
+- Use the configured provider's supported web-search/research capability for current Indian news, filings, corporate announcements, and ad-hoc fundamentals. Claude currently has native web search; providers without it must prefer `HOLD` when current information is required rather than inventing facts. Prefer primary or authoritative sources and require source/date-aware reasoning.
 - Do not add unofficial NSE/Screener/Trendlyne scraping as a hard dependency.
 
 ## Git policy
