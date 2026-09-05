@@ -16,6 +16,7 @@ class LiquidityRank:
     exchange: str
     last_timestamp: datetime
     average_volume: Decimal
+    average_traded_value: Decimal
     last_close: Decimal
 
 
@@ -52,14 +53,21 @@ def rank_liquid_instruments(
             continue
         selected = available_bars[-volume_window:]
         average_volume = sum((Decimal(bar.volume) for bar in selected), Decimal("0")) / Decimal(len(selected))
+        average_traded_value = (
+            sum((bar.close * Decimal(bar.volume) for bar in selected), Decimal("0")) / Decimal(len(selected))
+        )
         ranks.append(
             LiquidityRank(
                 instrument=last.instrument,
                 exchange=last.exchange,
                 last_timestamp=last.timestamp,
                 average_volume=average_volume,
+                average_traded_value=average_traded_value,
                 last_close=last.close,
             )
         )
-    ranks.sort(key=lambda item: (item.average_volume, item.instrument), reverse=True)
+    # Rank by rupee traded value (price x volume), not raw share count: a low-priced,
+    # high-share-count penny stock can dominate a volume-only ranking while being far
+    # less liquid in the rupee terms that actually matter for a real account's fills.
+    ranks.sort(key=lambda item: (item.average_traded_value, item.instrument), reverse=True)
     return tuple(ranks[:top_n])

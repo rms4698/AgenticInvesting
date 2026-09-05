@@ -129,7 +129,7 @@ def _render_report(args, ranked, outcomes: list[Outcome], features: list[Crossin
         "# Technical Multi-Bagger Analysis",
         "",
         f"Window: `{args.start.isoformat()}` to `{args.end.isoformat()}`",
-        f"Universe: `{len(ranked)}` instruments ranked using volume known at the window start",
+        f"Universe: `{len(ranked)}` instruments ranked by traded value known at the window start",
         f"Usable histories: `{len(outcomes)}`",
         "",
         "## Outcome Counts",
