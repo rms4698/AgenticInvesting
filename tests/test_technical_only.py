@@ -126,6 +126,106 @@ class TechnicalOnlyPortfolioTests(unittest.TestCase):
         )
         self.assertTrue(config.enable_pyramiding)
 
+    def test_sizing_and_pacing_settings_are_validated(self) -> None:
+        with self.assertRaises(ValueError):
+            TechnicalOnlyConfig(max_new_entries_per_period=0)
+        with self.assertRaises(ValueError):
+            TechnicalOnlyConfig(new_entry_period_days=0)
+        with self.assertRaises(ValueError):
+            TechnicalOnlyConfig(backtest_kill_switch_cooldown_days=0)
+        config = TechnicalOnlyConfig(
+            use_weight_based_sizing=True,
+            max_new_entries_per_period=2,
+            backtest_kill_switch_cooldown_days=10,
+        )
+        self.assertTrue(config.use_weight_based_sizing)
+
+    def test_entry_pacing_limits_new_positions_per_period(self) -> None:
+        bars = {"AAAA": make_bars("AAAA", 121), "BBBB": make_bars("BBBB", 121)}
+
+        unpaced = TechnicalOnlyBacktester(
+            config=TechnicalOnlyConfig(
+                minimum_rsi=Decimal("0"),
+                maximum_rsi=Decimal("100"),
+                minimum_volume_ratio=Decimal("0"),
+                relative_strength_periods=(5,),
+                weekly_sma_period=4,
+                weekly_slope_lookback=1,
+                start=datetime(2020, 1, 1, tzinfo=timezone.utc),
+                end=datetime(2020, 4, 30, tzinfo=timezone.utc),
+            )
+        ).run(bars)
+        first_day_unpaced = min(record.entry_time for record in unpaced.trade_records)
+        same_day_unpaced = sum(
+            1 for record in unpaced.trade_records if record.entry_time == first_day_unpaced
+        )
+        self.assertEqual(same_day_unpaced, 2)
+
+        paced = TechnicalOnlyBacktester(
+            config=TechnicalOnlyConfig(
+                minimum_rsi=Decimal("0"),
+                maximum_rsi=Decimal("100"),
+                minimum_volume_ratio=Decimal("0"),
+                relative_strength_periods=(5,),
+                weekly_sma_period=4,
+                weekly_slope_lookback=1,
+                max_new_entries_per_period=1,
+                new_entry_period_days=5,
+                start=datetime(2020, 1, 1, tzinfo=timezone.utc),
+                end=datetime(2020, 4, 30, tzinfo=timezone.utc),
+            )
+        ).run(bars)
+        first_day_paced = min(record.entry_time for record in paced.trade_records)
+        same_day_paced = sum(1 for record in paced.trade_records if record.entry_time == first_day_paced)
+        self.assertEqual(same_day_paced, 1)
+
+    def test_kill_switch_cooldown_resets_after_configured_days(self) -> None:
+        from agentic_investing.risk import RiskEngine, RiskLimits
+
+        config = TechnicalOnlyConfig(backtest_kill_switch_cooldown_days=5)
+        backtester = TechnicalOnlyBacktester(config=config)
+        engine = RiskEngine(
+            RiskLimits(account_capital=Decimal("100000"), hard_drawdown_fraction=Decimal("0.12"))
+        )
+        t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        engine.mark_to_market(Decimal("100000"), t0)
+        engine.mark_to_market(Decimal("85000"), t0)  # trips the 12% hard-drawdown kill switch
+        self.assertTrue(engine.kill_switch_triggered)
+
+        triggered_at, reset_happened = backtester._apply_kill_switch_cooldown(engine, t0, None)
+        self.assertEqual(triggered_at, t0)
+        self.assertFalse(reset_happened)
+
+        triggered_at, reset_happened = backtester._apply_kill_switch_cooldown(
+            engine, t0 + timedelta(days=4), triggered_at
+        )
+        self.assertFalse(reset_happened)
+        self.assertTrue(engine.kill_switch_triggered)
+
+        triggered_at, reset_happened = backtester._apply_kill_switch_cooldown(
+            engine, t0 + timedelta(days=5), triggered_at
+        )
+        self.assertTrue(reset_happened)
+        self.assertIsNone(triggered_at)
+        self.assertFalse(engine.kill_switch_triggered)
+
+    def test_kill_switch_cooldown_disabled_by_default_leaves_permanent_trip(self) -> None:
+        from agentic_investing.risk import RiskEngine, RiskLimits
+
+        backtester = TechnicalOnlyBacktester(config=TechnicalOnlyConfig())
+        engine = RiskEngine(
+            RiskLimits(account_capital=Decimal("100000"), hard_drawdown_fraction=Decimal("0.12"))
+        )
+        t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        engine.mark_to_market(Decimal("100000"), t0)
+        engine.mark_to_market(Decimal("85000"), t0)
+
+        triggered_at, reset_happened = backtester._apply_kill_switch_cooldown(
+            engine, t0 + timedelta(days=100), None
+        )
+        self.assertFalse(reset_happened)
+        self.assertTrue(engine.kill_switch_triggered)
+
 
 if __name__ == "__main__":
     unittest.main()

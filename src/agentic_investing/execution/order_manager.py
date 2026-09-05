@@ -52,8 +52,15 @@ class OrderManager:
         commission_rate: Decimal,
         timestamp: datetime | None = None,
         max_quantity: int | None = None,
+        size_by_weight: bool = False,
     ) -> OrderOutcome:
-        """Risk-check, size, and submit a BUY order. Never bypasses the risk engine."""
+        """Risk-check, size, and submit a BUY order. Never bypasses the risk engine.
+
+        ``size_by_weight`` opts into capital-weight-based sizing (see
+        :meth:`RiskEngine.size_new_position_by_weight`) instead of the default ATR-risk-based
+        sizing. Defaults to ``False`` so all existing live/shadow/agent callers are unaffected;
+        intended for research backtests only.
+        """
 
         existing = self._broker.get_order(client_order_id)
         if existing is not None:
@@ -68,13 +75,21 @@ class OrderManager:
             return OrderOutcome(submitted=False, order=None, reasons=decision.reasons)
 
         cash = self._broker.cash_balance()
-        quantity = self._risk_engine.size_new_position(
-            cash=cash,
-            fill_price=fill_price,
-            stop_distance_fraction=stop_distance_fraction,
-            initial_capital=initial_capital,
-            commission_rate=commission_rate,
-        )
+        if size_by_weight:
+            quantity = self._risk_engine.size_new_position_by_weight(
+                cash=cash,
+                fill_price=fill_price,
+                initial_capital=initial_capital,
+                commission_rate=commission_rate,
+            )
+        else:
+            quantity = self._risk_engine.size_new_position(
+                cash=cash,
+                fill_price=fill_price,
+                stop_distance_fraction=stop_distance_fraction,
+                initial_capital=initial_capital,
+                commission_rate=commission_rate,
+            )
         if max_quantity is not None:
             if max_quantity < 1:
                 return OrderOutcome(submitted=False, order=None, reasons=("max quantity must be positive",))

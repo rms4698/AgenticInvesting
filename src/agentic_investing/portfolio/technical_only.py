@@ -55,6 +55,10 @@ class TechnicalOnlyConfig:
     max_pyramid_additions: int = 2
     pyramid_trigger_atr_multiple: Decimal = Decimal("1")
     pyramid_quantity_fraction: Decimal = Decimal("0.5")
+    use_weight_based_sizing: bool = False
+    max_new_entries_per_period: int | None = None
+    new_entry_period_days: int = 5
+    backtest_kill_switch_cooldown_days: int | None = None
     start: datetime | None = None
     end: datetime | None = None
 
@@ -86,6 +90,12 @@ class TechnicalOnlyConfig:
             raise ValueError("pyramiding settings are invalid")
         if not Decimal("0") < self.pyramid_quantity_fraction <= Decimal("1"):
             raise ValueError("pyramid_quantity_fraction must be in (0, 1]")
+        if self.max_new_entries_per_period is not None and self.max_new_entries_per_period < 1:
+            raise ValueError("max_new_entries_per_period must be positive when set")
+        if self.new_entry_period_days < 1:
+            raise ValueError("new_entry_period_days must be positive")
+        if self.backtest_kill_switch_cooldown_days is not None and self.backtest_kill_switch_cooldown_days < 1:
+            raise ValueError("backtest_kill_switch_cooldown_days must be positive when set")
         if self.start is not None and self.start.tzinfo is None:
             raise ValueError("start must be timezone-aware")
         if self.end is not None and self.end.tzinfo is None:
@@ -144,6 +154,7 @@ class TechnicalOnlyBacktestResult:
     average_deployment_fraction: Decimal
     kill_switch_triggered: bool
     kill_switch_reason: str | None
+    kill_switch_reset_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,6 +277,9 @@ class TechnicalOnlyBacktester:
         active_entries: dict[str, list[tuple[datetime, Decimal, int]]] = {}
         active_universe: set[str] = set()
         last_rebalance_index = -self.config.universe_rebalance_days
+        recent_entries: deque[datetime] = deque()
+        kill_switch_triggered_at: datetime | None = None
+        kill_switch_reset_count = 0
 
         for timestamp in event_times:
             regime_history.extend(regime_events.get(timestamp, ()))
@@ -276,6 +290,11 @@ class TechnicalOnlyBacktester:
 
             equity_before = self._equity_at_prices(broker, histories, use_open=True)
             risk_engine.mark_to_market(equity_before, timestamp)
+            kill_switch_triggered_at, reset_happened = self._apply_kill_switch_cooldown(
+                risk_engine, timestamp, kill_switch_triggered_at
+            )
+            if reset_happened:
+                kill_switch_reset_count += 1
             self._execute_pending(
                 pending,
                 current_bars,
@@ -287,6 +306,7 @@ class TechnicalOnlyBacktester:
                 trade_records,
                 active_entries,
                 timestamp,
+                recent_entries=recent_entries,
             )
             self._execute_stops_and_targets(
                 current_bars,
@@ -331,6 +351,14 @@ class TechnicalOnlyBacktester:
             open_instruments = {position.instrument for position in broker.list_positions()}
             pending_buys = sum(action.action == "BUY" for action in pending.values())
             slots = max(0, self.config.max_positions - len(open_instruments) - pending_buys)
+            if self.config.max_new_entries_per_period is not None:
+                window_start = timestamp - timedelta(days=self.config.new_entry_period_days)
+                while recent_entries and recent_entries[0] < window_start:
+                    recent_entries.popleft()
+                period_slots = max(
+                    0, self.config.max_new_entries_per_period - len(recent_entries) - pending_buys
+                )
+                slots = min(slots, period_slots)
             for candidate in sorted(candidates.values(), key=lambda item: (-item.score, item.instrument))[:slots]:
                 pending[candidate.instrument] = _PendingAction("BUY", candidate)
 
@@ -385,6 +413,7 @@ class TechnicalOnlyBacktester:
             average_deployment_fraction=average_deployment,
             kill_switch_triggered=risk_engine.kill_switch_triggered,
             kill_switch_reason=risk_engine.kill_switch_reason,
+            kill_switch_reset_count=kill_switch_reset_count,
         )
 
     def _candidate(
@@ -606,6 +635,34 @@ class TechnicalOnlyBacktester:
             volume_ratio=Decimal(bar.volume) / average_volume if average_volume else Decimal("0"),
         )
 
+    def _apply_kill_switch_cooldown(
+        self,
+        risk_engine: RiskEngine,
+        timestamp: datetime,
+        kill_switch_triggered_at: datetime | None,
+    ) -> tuple[datetime | None, bool]:
+        """Research-only: auto-reset a tripped kill switch after a configured cooldown.
+
+        Live/shadow/agent trading must keep requiring a manual :meth:`RiskEngine.reset_kill_switch`
+        call — this only applies inside this backtester, and only when
+        ``backtest_kill_switch_cooldown_days`` is explicitly set (default ``None`` leaves the
+        kill switch permanently tripped, matching prior behavior).
+        """
+
+        cooldown_days = self.config.backtest_kill_switch_cooldown_days
+        if cooldown_days is None:
+            return kill_switch_triggered_at, False
+        if not risk_engine.kill_switch_triggered:
+            return None, False
+        if kill_switch_triggered_at is None:
+            return timestamp, False
+        if (timestamp - kill_switch_triggered_at).days >= cooldown_days:
+            risk_engine.reset_kill_switch(
+                reason=f"backtest research cooldown expired after {cooldown_days} days"
+            )
+            return None, True
+        return kill_switch_triggered_at, False
+
     def _market_regime_allows_entries(self, bars: Sequence[Bar]) -> bool:
         if self.market_regime_bars is None:
             return True
@@ -629,6 +686,8 @@ class TechnicalOnlyBacktester:
         trade_records: list[TradeRecord],
         active_entries: dict[str, list[tuple[datetime, Decimal, int]]],
         timestamp: datetime,
+        *,
+        recent_entries: deque[datetime] | None = None,
     ) -> None:
         for instrument in tuple(pending):
             bar = current_bars.get(instrument)
@@ -687,6 +746,7 @@ class TechnicalOnlyBacktester:
                     initial_capital=self.initial_capital,
                     commission_rate=self.commission_rate,
                     timestamp=timestamp,
+                    size_by_weight=self.config.use_weight_based_sizing,
                 )
                 if outcome.submitted:
                     plans[instrument] = _Plan(
@@ -704,6 +764,8 @@ class TechnicalOnlyBacktester:
                             order.filled_quantity,
                             )
                         )
+                        if recent_entries is not None:
+                            recent_entries.append(timestamp)
 
     def _schedule_pyramids(
         self,

@@ -59,6 +59,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--require-relative-strength", action="store_true")
     parser.add_argument("--require-52-week-proximity", action="store_true")
     parser.add_argument("--entry-mode", choices=("trend", "breakout"), default="trend")
+    parser.add_argument(
+        "--use-weight-based-sizing",
+        action="store_true",
+        help="Size positions by target equity weight (bounded by max_single_position_fraction) "
+        "instead of dividing a fixed risk budget by the ATR stop distance",
+    )
+    parser.add_argument(
+        "--max-new-entries-per-period",
+        type=int,
+        default=None,
+        help="Cap new BUY entries within a rolling window (see --new-entry-period-days) to avoid "
+        "piling into every open slot on the same day",
+    )
+    parser.add_argument("--new-entry-period-days", type=int, default=5)
+    parser.add_argument(
+        "--backtest-kill-switch-cooldown-days",
+        type=int,
+        default=None,
+        help="Research-only: auto-reset the hard-drawdown kill switch after this many calendar "
+        "days instead of leaving it permanently tripped for the rest of the backtest",
+    )
     parser.add_argument("--output", default="reports/technical_portfolio/2021-09-05_to_2026-09-05.md")
     parser.add_argument("--allocation-output", default="reports/technical_portfolio/allocation_history.csv")
     parser.add_argument("--trade-ledger-output", default="reports/technical_portfolio/trade_ledger.csv")
@@ -110,6 +131,10 @@ def main() -> int:
         enable_pyramiding=args.enable_pyramiding,
         max_pyramid_additions=args.max_pyramid_additions,
         pyramid_trigger_atr_multiple=args.pyramid_trigger_atr,
+        use_weight_based_sizing=args.use_weight_based_sizing,
+        max_new_entries_per_period=args.max_new_entries_per_period,
+        new_entry_period_days=args.new_entry_period_days,
+        backtest_kill_switch_cooldown_days=args.backtest_kill_switch_cooldown_days,
         start=start,
         end=end,
     )
@@ -167,6 +192,9 @@ def _render_report(args: argparse.Namespace, ranked, missing, result, benchmark_
         f"- Risk budget: `{args.risk_per_trade_fraction * 100:.2f}%` per trade; `{args.max_open_risk_fraction * 100:.2f}%` open portfolio risk",
         f"- Entry mode: `{args.entry_mode}`; daily SMA({args.fast_period}) > SMA({args.slow_period}), RSI 50-{args.maximum_rsi}, volume ratio >= 1.0",
         f"- Pyramiding: `{'enabled' if args.enable_pyramiding else 'disabled'}`; max additions=`{args.max_pyramid_additions}`, trigger=`{args.pyramid_trigger_atr} ATR`",
+        f"- Position sizing: `{'weight-based (target equity weight)' if args.use_weight_based_sizing else 'risk-based (risk budget / ATR stop distance)'}`",
+        f"- Entry pacing: `{f'max {args.max_new_entries_per_period} new entries per {args.new_entry_period_days} days' if args.max_new_entries_per_period is not None else 'unlimited'}`",
+        f"- Kill-switch cooldown: `{f'{args.backtest_kill_switch_cooldown_days} days (research-only auto-reset)' if args.backtest_kill_switch_cooldown_days is not None else 'disabled (permanent until manual reset)'}`",
         "- Weekly trend, relative strength, 52-week proximity, volatility contraction, and breakout quality rank candidates",
         f"- Hard gates: weekly=`{args.require_weekly_confirmation}`, relative-strength=`{args.require_relative_strength}`, 52-week=`{args.require_52_week_proximity}`",
         f"- Exit: 2 ATR stop, {f'{args.trailing_stop_atr} ATR trailing stop' if args.exit_mode == 'trailing' else '3 ATR target'}, or SMA(20) < SMA(50)",
@@ -190,6 +218,7 @@ def _render_report(args: argparse.Namespace, ranked, missing, result, benchmark_
         f"- Average capital deployed: `{result.average_deployment_fraction * 100:.2f}%`",
         f"- Maximum positions held: `{result.max_positions_held}`",
         f"- Hard-drawdown kill switch: `{'TRIGGERED' if result.kill_switch_triggered else 'not triggered'}`",
+        f"- Kill-switch resets during backtest: `{result.kill_switch_reset_count}`",
     ]
     if result.kill_switch_reason:
         lines.append(f"- Kill-switch reason: `{result.kill_switch_reason}`")

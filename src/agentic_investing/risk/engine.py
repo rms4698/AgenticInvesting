@@ -160,3 +160,35 @@ class RiskEngine:
             (cash / (fill_price * (Decimal("1") + commission_rate))).to_integral_value(rounding=ROUND_DOWN)
         )
         return max(0, min(risk_quantity, value_quantity, deployment_quantity, cash_quantity))
+
+    def size_new_position_by_weight(
+        self,
+        *,
+        cash: Decimal,
+        fill_price: Decimal,
+        initial_capital: Decimal,
+        commission_rate: Decimal,
+    ) -> int:
+        """Return the largest quantity permitted by the per-position/deployment/cash caps only.
+
+        Unlike :meth:`size_new_position`, this does NOT divide by a stop distance, so it does
+        not shrink position size for volatile instruments with wide ATR-based stops. It is
+        opt-in, used only by research backtests that want capital-weight-based sizing (bounded
+        by the same ``max_single_position_fraction``/``max_deployed_capital`` caps) instead of
+        risk-based sizing. Live/shadow/agent order flow must keep using ``size_new_position``.
+        """
+
+        if fill_price <= 0:
+            raise ValueError("fill_price must be positive")
+        value_quantity = int(
+            (self.limits.max_single_position_fraction * initial_capital / fill_price).to_integral_value(
+                rounding=ROUND_DOWN
+            )
+        )
+        deployment_quantity = int(
+            (self.limits.max_deployed_capital / fill_price).to_integral_value(rounding=ROUND_DOWN)
+        )
+        cash_quantity = int(
+            (cash / (fill_price * (Decimal("1") + commission_rate))).to_integral_value(rounding=ROUND_DOWN)
+        )
+        return max(0, min(value_quantity, deployment_quantity, cash_quantity))

@@ -166,5 +166,49 @@ class RiskEngineSizingTests(unittest.TestCase):
             )
 
 
+class RiskEngineWeightSizingTests(unittest.TestCase):
+    def test_weight_sizing_ignores_stop_distance_and_uses_position_cap(self) -> None:
+        engine = make_engine(account_capital=Decimal("100000"), max_single_position_fraction=Decimal("0.15"))
+
+        quantity = engine.size_new_position_by_weight(
+            cash=Decimal("100000"),
+            fill_price=Decimal("100"),
+            initial_capital=Decimal("100000"),
+            commission_rate=Decimal("0"),
+        )
+        # 15% of 100000 / 100 = 150 shares, far larger than the ATR-risk-based 100 shares
+        # size_new_position would return for the same fill_price/stop_distance_fraction=0.05.
+        self.assertEqual(quantity, 150)
+        risk_based = engine.size_new_position(
+            cash=Decimal("100000"),
+            fill_price=Decimal("100"),
+            stop_distance_fraction=Decimal("0.05"),
+            initial_capital=Decimal("100000"),
+            commission_rate=Decimal("0"),
+        )
+        self.assertGreater(quantity, risk_based)
+
+    def test_weight_sizing_is_bounded_by_available_cash(self) -> None:
+        engine = make_engine(account_capital=Decimal("100000"))
+
+        quantity = engine.size_new_position_by_weight(
+            cash=Decimal("300"),
+            fill_price=Decimal("100"),
+            initial_capital=Decimal("100000"),
+            commission_rate=Decimal("0"),
+        )
+        self.assertEqual(quantity, 3)
+
+    def test_weight_sizing_rejects_non_positive_price(self) -> None:
+        engine = make_engine()
+        with self.assertRaises(ValueError):
+            engine.size_new_position_by_weight(
+                cash=Decimal("1000"),
+                fill_price=Decimal("0"),
+                initial_capital=Decimal("100000"),
+                commission_rate=Decimal("0"),
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

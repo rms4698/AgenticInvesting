@@ -120,6 +120,48 @@ class OrderManagerBuyGatingTests(unittest.TestCase):
         self.assertEqual(len(broker.list_orders()), 1)
 
 
+class OrderManagerWeightSizingTests(unittest.TestCase):
+    def test_size_by_weight_produces_larger_fill_than_default_risk_sizing(self) -> None:
+        manager, broker, engine = make_manager(max_single_position_fraction=Decimal("0.15"))
+        t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        engine.mark_to_market(Decimal("100000"), t0)
+
+        outcome = manager.submit_buy(
+            client_order_id="order-1",
+            instrument="TEST",
+            exchange="NSE",
+            equity=Decimal("100000"),
+            fill_price=Decimal("100"),
+            stop_distance_fraction=Decimal("0.05"),
+            initial_capital=Decimal("100000"),
+            commission_rate=Decimal("0"),
+            size_by_weight=True,
+        )
+
+        assert outcome.order is not None
+        # 15% of 100000 / 100 = 150 shares, vs the default risk-based sizing's 100 shares.
+        self.assertEqual(outcome.order.filled_quantity, 150)
+
+    def test_size_by_weight_defaults_to_false_and_is_unaffected_for_existing_callers(self) -> None:
+        manager, broker, engine = make_manager()
+        t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        engine.mark_to_market(Decimal("100000"), t0)
+
+        outcome = manager.submit_buy(
+            client_order_id="order-1",
+            instrument="TEST",
+            exchange="NSE",
+            equity=Decimal("100000"),
+            fill_price=Decimal("100"),
+            stop_distance_fraction=Decimal("0.05"),
+            initial_capital=Decimal("100000"),
+            commission_rate=Decimal("0"),
+        )
+
+        assert outcome.order is not None
+        self.assertEqual(outcome.order.filled_quantity, 100)
+
+
 class OrderManagerSellGatingTests(unittest.TestCase):
     def test_sell_is_never_blocked_by_kill_switch(self) -> None:
         manager, broker, engine = make_manager()
