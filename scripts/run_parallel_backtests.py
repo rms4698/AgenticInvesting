@@ -24,6 +24,8 @@ from agentic_investing.risk import RiskLimits
 
 INDIA = ZoneInfo("Asia/Kolkata")
 UTC = timezone.utc
+_WORKER_BARS: dict[str, list] = {}
+_WORKER_BENCHMARK: list = []
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,7 +63,11 @@ def main() -> int:
         for trailing_stop in trailing_stops
         for positions in max_positions
     )
-    with ProcessPoolExecutor(max_workers=max(1, args.workers)) as executor:
+    with ProcessPoolExecutor(
+        max_workers=max(1, args.workers),
+        initializer=_initialize_worker,
+        initargs=(str(data_dir), symbols),
+    ) as executor:
         results = list(executor.map(_run_case, cases))
     results.sort(key=lambda row: (row["trailing_stop_atr"], row["max_positions"]))
     output = ROOT / args.output
@@ -82,11 +88,8 @@ def main() -> int:
 
 
 def _run_case(case: dict) -> dict[str, str | int]:
-    bars_by_instrument = {
-        symbol: load_bars_json(Path(case["data_dir"]) / f"nse_{symbol.lower()}_1d.json")
-        for symbol in case["symbols"]
-    }
-    benchmark = load_bars_json(Path(case["benchmark_path"]))
+    bars_by_instrument = _WORKER_BARS
+    benchmark = _WORKER_BENCHMARK
     config = TechnicalOnlyConfig(
         max_positions=case["max_positions"],
         maximum_rsi=Decimal("100"),
@@ -119,6 +122,18 @@ def _run_case(case: dict) -> dict[str, str | int]:
         "average_deployment": str(result.average_deployment_fraction),
         "kill_switch": result.kill_switch_triggered,
     }
+
+
+def _initialize_worker(data_dir: str, symbols: tuple[str, ...]) -> None:
+    """Load shared read-only datasets once per worker process."""
+
+    global _WORKER_BARS, _WORKER_BENCHMARK
+    directory = Path(data_dir)
+    _WORKER_BARS = {
+        symbol: load_bars_json(directory / f"nse_{symbol.lower()}_1d.json")
+        for symbol in symbols
+    }
+    _WORKER_BENCHMARK = load_bars_json(directory / "nse_niftybees_1d.json")
 
 
 def _india_day_start(value: date) -> datetime:

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from bisect import bisect_left
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Mapping, Sequence
@@ -160,6 +161,24 @@ class _Plan:
     pyramid_additions: int = 0
 
 
+@dataclass(slots=True)
+class _IndicatorState:
+    last_length: int = 0
+    previous_close: Decimal | None = None
+    fast_values: deque[Decimal] = field(default_factory=deque)
+    slow_values: deque[Decimal] = field(default_factory=deque)
+    volume_values: deque[Decimal] = field(default_factory=deque)
+    gains: deque[Decimal] = field(default_factory=deque)
+    losses: deque[Decimal] = field(default_factory=deque)
+    true_ranges: deque[Decimal] = field(default_factory=deque)
+    fast_sum: Decimal = Decimal("0")
+    slow_sum: Decimal = Decimal("0")
+    volume_sum: Decimal = Decimal("0")
+    gain_sum: Decimal = Decimal("0")
+    loss_sum: Decimal = Decimal("0")
+    true_range_sum: Decimal = Decimal("0")
+
+
 class TechnicalOnlyBacktester:
     """Backtest technical selection over an outer calendar of unequal histories."""
 
@@ -189,6 +208,8 @@ class TechnicalOnlyBacktester:
         self.market_fast_period = market_fast_period
         self.market_slow_period = market_slow_period
         self._weekly_cache: dict[str, tuple[tuple[int, int], bool | None]] = {}
+        self._snapshot_cache: dict[tuple[str, datetime], TechnicalSnapshot | None] = {}
+        self._indicator_states: dict[str, _IndicatorState] = {}
         self.risk_limits = risk_limits or RiskLimits(
             account_capital=initial_capital,
             max_positions=self.config.max_positions,
@@ -197,6 +218,9 @@ class TechnicalOnlyBacktester:
             raise ValueError("risk limits capital must match initial capital")
 
     def run(self, bars_by_instrument: Mapping[str, Sequence[Bar]]) -> TechnicalOnlyBacktestResult:
+        self._weekly_cache.clear()
+        self._snapshot_cache.clear()
+        self._indicator_states.clear()
         normalized = self._validate_and_normalize(bars_by_instrument)
         start = self.config.start or min(bar.timestamp for bars in normalized.values() for bar in bars)
         end = self.config.end or max(bar.timestamp for bars in normalized.values() for bar in bars)
@@ -506,23 +530,80 @@ class TechnicalOnlyBacktester:
         return Decimal("0.1") if prior_range > 0 and recent_range < prior_range else Decimal("0")
 
     def _technical_snapshot(self, bars: Sequence[Bar]) -> TechnicalSnapshot | None:
-        required_bars = max(
-            self.config.slow_period,
-            self.config.rsi_period + 1,
-            self.config.atr_period + 1,
-            self.config.volume_period,
-        )
-        if len(bars) < required_bars:
+        cache_key = (bars[-1].instrument, bars[-1].timestamp) if bars else None
+        if cache_key is not None and cache_key in self._snapshot_cache:
+            return self._snapshot_cache[cache_key]
+        instrument = bars[-1].instrument
+        state = self._indicator_states.setdefault(instrument, _IndicatorState())
+        for bar in bars[state.last_length :]:
+            self._update_indicator_state(state, bar)
+        state.last_length = len(bars)
+        snapshot = self._snapshot_from_state(bars[-1], state)
+        if cache_key is not None:
+            self._snapshot_cache[cache_key] = snapshot
+        return snapshot
+
+    def _update_indicator_state(self, state: _IndicatorState, bar: Bar) -> None:
+        state.fast_values.append(bar.close)
+        state.fast_sum += bar.close
+        if len(state.fast_values) > self.config.fast_period:
+            state.fast_sum -= state.fast_values.popleft()
+        state.slow_values.append(bar.close)
+        state.slow_sum += bar.close
+        if len(state.slow_values) > self.config.slow_period:
+            state.slow_sum -= state.slow_values.popleft()
+        volume = Decimal(bar.volume)
+        state.volume_values.append(volume)
+        state.volume_sum += volume
+        if len(state.volume_values) > self.config.volume_period:
+            state.volume_sum -= state.volume_values.popleft()
+        if state.previous_close is not None:
+            change = bar.close - state.previous_close
+            gain = max(change, Decimal("0"))
+            loss = max(-change, Decimal("0"))
+            state.gains.append(gain)
+            state.gain_sum += gain
+            state.losses.append(loss)
+            state.loss_sum += loss
+            if len(state.gains) > self.config.rsi_period:
+                state.gain_sum -= state.gains.popleft()
+                state.loss_sum -= state.losses.popleft()
+            true_range = max(
+                bar.high - bar.low,
+                abs(bar.high - state.previous_close),
+                abs(bar.low - state.previous_close),
+            )
+            state.true_ranges.append(true_range)
+            state.true_range_sum += true_range
+            if len(state.true_ranges) > self.config.atr_period:
+                state.true_range_sum -= state.true_ranges.popleft()
+        state.previous_close = bar.close
+
+    def _snapshot_from_state(self, bar: Bar, state: _IndicatorState) -> TechnicalSnapshot | None:
+        if (
+            len(state.slow_values) < self.config.slow_period
+            or len(state.gains) < self.config.rsi_period
+            or len(state.true_ranges) < self.config.atr_period
+            or len(state.volume_values) < self.config.volume_period
+        ):
             return None
-        visible = bars[-required_bars:]
-        return calculate_technical_snapshot(
-            visible,
-            len(visible) - 1,
-            fast_period=self.config.fast_period,
-            slow_period=self.config.slow_period,
-            rsi_period=self.config.rsi_period,
-            atr_period=self.config.atr_period,
-            volume_period=self.config.volume_period,
+        average_gain = state.gain_sum / Decimal(self.config.rsi_period)
+        average_loss = state.loss_sum / Decimal(self.config.rsi_period)
+        if average_loss == 0:
+            rsi = Decimal("100") if average_gain > 0 else Decimal("50")
+        else:
+            rsi = Decimal("100") - Decimal("100") / (Decimal("1") + average_gain / average_loss)
+        average_volume = state.volume_sum / Decimal(self.config.volume_period)
+        return TechnicalSnapshot(
+            instrument=bar.instrument,
+            exchange=bar.exchange,
+            timestamp=bar.timestamp,
+            close=bar.close,
+            sma_fast=state.fast_sum / Decimal(self.config.fast_period),
+            sma_slow=state.slow_sum / Decimal(self.config.slow_period),
+            rsi=rsi,
+            atr=state.true_range_sum / Decimal(self.config.atr_period),
+            volume_ratio=Decimal(bar.volume) / average_volume if average_volume else Decimal("0"),
         )
 
     def _market_regime_allows_entries(self, bars: Sequence[Bar]) -> bool:

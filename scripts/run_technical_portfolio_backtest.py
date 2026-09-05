@@ -40,6 +40,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--universe-mode", choices=("fixed", "dynamic"), default="fixed")
     parser.add_argument("--initial-capital", type=Decimal, default=Decimal("100000"))
     parser.add_argument("--max-positions", type=int, default=8)
+    parser.add_argument("--fast-period", type=int, default=30)
+    parser.add_argument("--slow-period", type=int, default=100)
     parser.add_argument("--maximum-rsi", type=Decimal, default=Decimal("100"))
     parser.add_argument("--exit-mode", choices=("target", "trailing"), default="trailing")
     parser.add_argument("--trailing-stop-atr", type=Decimal, default=Decimal("3"))
@@ -95,6 +97,8 @@ def main() -> int:
     regime_bars = load_bars_json(ROOT / args.regime_dataset) if args.regime_dataset else None
 
     config = TechnicalOnlyConfig(
+        fast_period=args.fast_period,
+        slow_period=args.slow_period,
         max_positions=args.max_positions,
         maximum_rsi=args.maximum_rsi,
         use_profit_target=args.exit_mode == "target",
@@ -161,7 +165,7 @@ def _render_report(args: argparse.Namespace, ranked, missing, result, benchmark_
         "- Data frequency: daily bars; signals use the closed bar and execute at the next available bar open",
         f"- Market regime gate: `{'50/200 benchmark trend' if args.regime_dataset else 'disabled'}`",
         f"- Risk budget: `{args.risk_per_trade_fraction * 100:.2f}%` per trade; `{args.max_open_risk_fraction * 100:.2f}%` open portfolio risk",
-        f"- Entry mode: `{args.entry_mode}`; daily SMA(20) > SMA(50), RSI 50-{args.maximum_rsi}, volume ratio >= 1.0",
+        f"- Entry mode: `{args.entry_mode}`; daily SMA({args.fast_period}) > SMA({args.slow_period}), RSI 50-{args.maximum_rsi}, volume ratio >= 1.0",
         f"- Pyramiding: `{'enabled' if args.enable_pyramiding else 'disabled'}`; max additions=`{args.max_pyramid_additions}`, trigger=`{args.pyramid_trigger_atr} ATR`",
         "- Weekly trend, relative strength, 52-week proximity, volatility contraction, and breakout quality rank candidates",
         f"- Hard gates: weekly=`{args.require_weekly_confirmation}`, relative-strength=`{args.require_relative_strength}`, 52-week=`{args.require_52_week_proximity}`",
