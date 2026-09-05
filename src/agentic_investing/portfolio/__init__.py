@@ -11,6 +11,7 @@ from .technical_only import (
     TechnicalOnlyBacktester,
     TechnicalOnlyCandidate,
     TechnicalOnlyConfig,
+    TradeRecord,
 )
 from .universe import PortfolioUniverse, UniverseInstrument, load_universe
 
@@ -27,6 +28,7 @@ __all__ = [
     "TechnicalOnlyBacktester",
     "TechnicalOnlyCandidate",
     "TechnicalOnlyConfig",
+    "TradeRecord",
     "ScreenedCandidate",
     "ScreeningConfig",
     "build_portfolio_decisions",

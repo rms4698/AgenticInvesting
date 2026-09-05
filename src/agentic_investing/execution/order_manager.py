@@ -51,6 +51,7 @@ class OrderManager:
         initial_capital: Decimal,
         commission_rate: Decimal,
         timestamp: datetime | None = None,
+        max_quantity: int | None = None,
     ) -> OrderOutcome:
         """Risk-check, size, and submit a BUY order. Never bypasses the risk engine."""
 
@@ -74,6 +75,10 @@ class OrderManager:
             initial_capital=initial_capital,
             commission_rate=commission_rate,
         )
+        if max_quantity is not None:
+            if max_quantity < 1:
+                return OrderOutcome(submitted=False, order=None, reasons=("max quantity must be positive",))
+            quantity = min(quantity, max_quantity)
         if quantity <= 0:
             return OrderOutcome(submitted=False, order=None, reasons=("computed order quantity is zero",))
 

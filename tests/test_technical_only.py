@@ -57,6 +57,8 @@ class TechnicalOnlyPortfolioTests(unittest.TestCase):
         self.assertEqual(result.candidate_count, 2)
         self.assertEqual(result.start, config.start)
         self.assertGreaterEqual(result.metrics.trade_count, 1)
+        self.assertEqual(len(result.trade_records), result.metrics.trade_count)
+        self.assertTrue(result.trade_records[0].exit_reason)
         self.assertLessEqual(result.max_positions_held, 8)
         self.assertTrue(all(value > 0 for value in result.equity_curve))
 
@@ -114,6 +116,15 @@ class TechnicalOnlyPortfolioTests(unittest.TestCase):
         )
         result = TechnicalOnlyBacktester(config=config).run({"TEST": make_bars("TEST", 121)})
         self.assertGreaterEqual(result.metrics.trade_count, 0)
+
+    def test_pyramiding_settings_are_validated(self) -> None:
+        config = TechnicalOnlyConfig(
+            enable_pyramiding=True,
+            max_pyramid_additions=2,
+            pyramid_trigger_atr_multiple=Decimal("1"),
+            pyramid_quantity_fraction=Decimal("0.5"),
+        )
+        self.assertTrue(config.enable_pyramiding)
 
 
 if __name__ == "__main__":

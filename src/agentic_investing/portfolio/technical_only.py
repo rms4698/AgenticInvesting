@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -49,6 +50,10 @@ class TechnicalOnlyConfig:
     breakout_lookback: int = 120
     require_breakout: bool = False
     breakout_volume_ratio: Decimal = Decimal("1")
+    enable_pyramiding: bool = False
+    max_pyramid_additions: int = 2
+    pyramid_trigger_atr_multiple: Decimal = Decimal("1")
+    pyramid_quantity_fraction: Decimal = Decimal("0.5")
     start: datetime | None = None
     end: datetime | None = None
 
@@ -76,6 +81,10 @@ class TechnicalOnlyConfig:
             raise ValueError("weekly settings are invalid")
         if self.breakout_lookback < self.slow_period or self.breakout_volume_ratio < 0:
             raise ValueError("breakout settings are invalid")
+        if self.max_pyramid_additions < 0 or self.pyramid_trigger_atr_multiple <= 0:
+            raise ValueError("pyramiding settings are invalid")
+        if not Decimal("0") < self.pyramid_quantity_fraction <= Decimal("1"):
+            raise ValueError("pyramid_quantity_fraction must be in (0, 1]")
         if self.start is not None and self.start.tzinfo is None:
             raise ValueError("start must be timezone-aware")
         if self.end is not None and self.end.tzinfo is None:
@@ -105,6 +114,19 @@ class AllocationSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class TradeRecord:
+    instrument: str
+    exchange: str
+    entry_time: datetime
+    exit_time: datetime
+    entry_price: Decimal
+    exit_price: Decimal
+    quantity: int
+    pnl: Decimal
+    exit_reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class TechnicalOnlyBacktestResult:
     initial_capital: Decimal
     final_capital: Decimal
@@ -114,6 +136,7 @@ class TechnicalOnlyBacktestResult:
     equity_curve: tuple[Decimal, ...]
     trade_pnls: tuple[Decimal, ...]
     allocation_history: tuple[AllocationSnapshot, ...]
+    trade_records: tuple[TradeRecord, ...]
     metrics: PerformanceMetrics
     cagr: Decimal
     max_positions_held: int
@@ -134,6 +157,7 @@ class _Plan:
     target_price: Decimal | None
     highest_close: Decimal
     trailing_multiple: Decimal | None
+    pyramid_additions: int = 0
 
 
 class TechnicalOnlyBacktester:
@@ -190,33 +214,41 @@ class TechnicalOnlyBacktester:
         broker = PaperBroker(self.initial_capital, self.commission_rate)
         risk_engine = RiskEngine(self.risk_limits)
         order_manager = OrderManager(broker, risk_engine)
-        histories: dict[str, list[Bar]] = {instrument: [] for instrument in normalized}
-        pointers = {instrument: -1 for instrument in normalized}
-        regime_history: list[Bar] = []
-        regime_pointer = -1
+        histories: dict[str, list[Bar]] = {
+            instrument: [bar for bar in bars if bar.timestamp < start]
+            for instrument, bars in normalized.items()
+        }
+        events_by_timestamp: dict[datetime, list[tuple[str, Bar]]] = {}
+        for instrument, bars in normalized.items():
+            for bar in bars:
+                if start <= bar.timestamp <= end:
+                    events_by_timestamp.setdefault(bar.timestamp, []).append((instrument, bar))
+        self._weekly_series = {
+            instrument: self._build_weekly_series(bars) for instrument, bars in normalized.items()
+        }
+        regime_history: list[Bar] = [
+            bar for bar in (self.market_regime_bars or ()) if bar.timestamp < start
+        ]
+        regime_events: dict[datetime, list[Bar]] = {}
+        for bar in self.market_regime_bars or ():
+            if start <= bar.timestamp <= end:
+                regime_events.setdefault(bar.timestamp, []).append(bar)
         pending: dict[str, _PendingAction] = {}
         plans: dict[str, _Plan] = {}
         trade_pnls: list[Decimal] = []
         equity_curve: list[Decimal] = [self.initial_capital]
         allocation_history: list[AllocationSnapshot] = []
+        trade_records: list[TradeRecord] = []
+        active_entries: dict[str, list[tuple[datetime, Decimal, int]]] = {}
         active_universe: set[str] = set()
         last_rebalance_index = -self.config.universe_rebalance_days
 
         for timestamp in event_times:
-            if self.market_regime_bars is not None:
-                while (
-                    regime_pointer + 1 < len(self.market_regime_bars)
-                    and self.market_regime_bars[regime_pointer + 1].timestamp <= timestamp
-                ):
-                    regime_pointer += 1
-                    regime_history.append(self.market_regime_bars[regime_pointer])
+            regime_history.extend(regime_events.get(timestamp, ()))
             current_bars: dict[str, Bar] = {}
-            for instrument, bars in normalized.items():
-                while pointers[instrument] + 1 < len(bars) and bars[pointers[instrument] + 1].timestamp <= timestamp:
-                    pointers[instrument] += 1
-                    histories[instrument].append(bars[pointers[instrument]])
-                if histories[instrument] and histories[instrument][-1].timestamp == timestamp:
-                    current_bars[instrument] = histories[instrument][-1]
+            for instrument, bar in events_by_timestamp.get(timestamp, ()):
+                histories[instrument].append(bar)
+                current_bars[instrument] = bar
 
             equity_before = self._equity_at_prices(broker, histories, use_open=True)
             risk_engine.mark_to_market(equity_before, timestamp)
@@ -228,6 +260,8 @@ class TechnicalOnlyBacktester:
                 order_manager,
                 plans,
                 trade_pnls,
+                trade_records,
+                active_entries,
                 timestamp,
             )
             self._execute_stops_and_targets(
@@ -237,8 +271,12 @@ class TechnicalOnlyBacktester:
                 order_manager,
                 plans,
                 trade_pnls,
+                trade_records,
+                active_entries,
                 timestamp,
             )
+            if self.config.enable_pyramiding:
+                self._schedule_pyramids(current_bars, histories, broker, plans, pending)
 
             event_index = len(equity_curve) - 1
             if event_index - last_rebalance_index >= self.config.universe_rebalance_days:
@@ -287,6 +325,9 @@ class TechnicalOnlyBacktester:
                     position.quantity,
                     bar.close * (Decimal("1") - self.slippage_rate),
                     f"{position.instrument}-{final_timestamp.isoformat()}-technical-final",
+                    trade_records=trade_records,
+                    active_entries=active_entries,
+                    exit_reason="final",
                 )
             )
         equity_curve[-1] = broker.cash_balance()
@@ -313,6 +354,7 @@ class TechnicalOnlyBacktester:
             equity_curve=tuple(equity_curve),
             trade_pnls=tuple(trade_pnls),
             allocation_history=tuple(allocation_history),
+            trade_records=tuple(trade_records),
             metrics=metrics,
             cagr=cagr,
             max_positions_held=max((item.position_count for item in allocation_history), default=0),
@@ -410,13 +452,10 @@ class TechnicalOnlyBacktester:
         cached = self._weekly_cache.get(instrument)
         if cached is not None and cached[0] == current_week:
             return cached[1]
-        weekly: dict[tuple[int, int], Decimal] = {}
-        for bar in bars:
-            local_date = bar.timestamp.astimezone(INDIA).date()
-            iso = local_date.isocalendar()
-            weekly[(iso.year, iso.week)] = bar.close
-        weekly.pop(current_week, None)
-        closes = list(weekly.values())
+        series = getattr(self, "_weekly_series", {}).get(instrument, ())
+        week_keys = [key for key, _ in series]
+        cutoff = bisect_left(week_keys, current_week)
+        closes = [close for _, close in series[:cutoff]]
         required = self.config.weekly_sma_period + self.config.weekly_slope_lookback
         if len(closes) < required:
             self._weekly_cache[instrument] = (current_week, None)
@@ -428,6 +467,15 @@ class TechnicalOnlyBacktester:
         result = closes[-1] > current_sma and current_sma > prior_sma
         self._weekly_cache[instrument] = (current_week, result)
         return result
+
+    @staticmethod
+    def _build_weekly_series(bars: Sequence[Bar]) -> tuple[tuple[tuple[int, int], Decimal], ...]:
+        weekly: dict[tuple[int, int], Decimal] = {}
+        for bar in bars:
+            local_date = bar.timestamp.astimezone(INDIA).date()
+            iso = local_date.isocalendar()
+            weekly[(iso.year, iso.week)] = bar.close
+        return tuple(sorted(weekly.items()))
 
     def _relative_strength(
         self,
@@ -497,6 +545,8 @@ class TechnicalOnlyBacktester:
         order_manager: OrderManager,
         plans: dict[str, _Plan],
         trade_pnls: list[Decimal],
+        trade_records: list[TradeRecord],
+        active_entries: dict[str, list[tuple[datetime, Decimal, int]]],
         timestamp: datetime,
     ) -> None:
         for instrument in tuple(pending):
@@ -514,9 +564,35 @@ class TechnicalOnlyBacktester:
                         position.quantity,
                         bar.open * (Decimal("1") - self.slippage_rate),
                         f"{instrument}-{timestamp.isoformat()}-technical-sell",
+                        trade_records=trade_records,
+                        active_entries=active_entries,
+                        exit_reason="trend",
                     )
                 )
                 plans.pop(instrument, None)
+            elif action.action == "PYRAMID" and position is not None:
+                plan = plans.get(instrument)
+                if plan is None:
+                    continue
+                max_quantity = max(1, int(position.quantity * self.config.pyramid_quantity_fraction))
+                fill_price = bar.open * (Decimal("1") + self.slippage_rate)
+                outcome = order_manager.submit_buy(
+                    client_order_id=f"{instrument}-{timestamp.isoformat()}-technical-pyramid",
+                    instrument=instrument,
+                    exchange=bar.exchange,
+                    equity=self._equity_at_prices(broker, histories, use_open=True),
+                    fill_price=fill_price,
+                    stop_distance_fraction=max(
+                        (plan.highest_close - plan.stop_price) / plan.highest_close,
+                        Decimal("0.01"),
+                    ),
+                    initial_capital=self.initial_capital,
+                    commission_rate=self.commission_rate,
+                    timestamp=timestamp,
+                    max_quantity=max_quantity,
+                )
+                if outcome.submitted:
+                    plan.pyramid_additions += 1
             elif action.action == "BUY" and position is None and action.candidate is not None:
                 stop_distance = (action.candidate.technical.close - action.candidate.stop_price) / action.candidate.technical.close
                 fill_price = bar.open * (Decimal("1") + self.slippage_rate)
@@ -538,6 +614,40 @@ class TechnicalOnlyBacktester:
                         highest_close=action.candidate.technical.close,
                         trailing_multiple=self.config.trailing_stop_atr_multiple,
                     )
+                    order = outcome.order
+                    if order is not None and order.average_fill_price is not None:
+                        active_entries.setdefault(instrument, []).append(
+                            (
+                            timestamp,
+                            order.average_fill_price,
+                            order.filled_quantity,
+                            )
+                        )
+
+    def _schedule_pyramids(
+        self,
+        current_bars: Mapping[str, Bar],
+        histories: Mapping[str, Sequence[Bar]],
+        broker: PaperBroker,
+        plans: Mapping[str, _Plan],
+        pending: dict[str, _PendingAction],
+    ) -> None:
+        for position in broker.list_positions():
+            if position.instrument in pending:
+                continue
+            plan = plans.get(position.instrument)
+            bar = current_bars.get(position.instrument)
+            history = histories.get(position.instrument)
+            if plan is None or bar is None or history is None:
+                continue
+            if plan.pyramid_additions >= self.config.max_pyramid_additions:
+                continue
+            snapshot = self._technical_snapshot(history)
+            if snapshot is None or snapshot.sma_fast <= snapshot.sma_slow:
+                continue
+            if bar.close < position.average_price + snapshot.atr * self.config.pyramid_trigger_atr_multiple:
+                continue
+            pending[position.instrument] = _PendingAction("PYRAMID")
 
     def _execute_stops_and_targets(
         self,
@@ -547,6 +657,8 @@ class TechnicalOnlyBacktester:
         order_manager: OrderManager,
         plans: dict[str, _Plan],
         trade_pnls: list[Decimal],
+        trade_records: list[TradeRecord],
+        active_entries: dict[str, list[tuple[datetime, Decimal, int]]],
         timestamp: datetime,
     ) -> None:
         for position in list(broker.list_positions()):
@@ -568,6 +680,9 @@ class TechnicalOnlyBacktester:
                         position.quantity,
                         min(bar.open, stop_price) * (Decimal("1") - self.slippage_rate),
                         f"{position.instrument}-{timestamp.isoformat()}-technical-stop",
+                        trade_records=trade_records,
+                        active_entries=active_entries,
+                        exit_reason="stop",
                     )
                 )
                 plans.pop(position.instrument, None)
@@ -580,6 +695,9 @@ class TechnicalOnlyBacktester:
                         position.quantity,
                         max(bar.open, plan.target_price) * (Decimal("1") - self.slippage_rate),
                         f"{position.instrument}-{timestamp.isoformat()}-technical-target",
+                        trade_records=trade_records,
+                        active_entries=active_entries,
+                        exit_reason="target",
                     )
                 )
                 plans.pop(position.instrument, None)
@@ -640,6 +758,10 @@ class TechnicalOnlyBacktester:
         quantity: int,
         fill_price: Decimal,
         client_order_id: str,
+        *,
+        trade_records: list[TradeRecord],
+        active_entries: dict[str, list[tuple[datetime, Decimal, int]]],
+        exit_reason: str,
     ) -> Decimal:
         position = next(item for item in broker.list_positions() if item.instrument == bar.instrument)
         outcome = order_manager.submit_sell(
@@ -652,7 +774,23 @@ class TechnicalOnlyBacktester:
         )
         if not outcome.submitted:
             return Decimal("0")
-        return (fill_price - position.average_price) * quantity
+        pnl = (fill_price - position.average_price) * quantity
+        entries = active_entries.pop(bar.instrument, [])
+        for entry_time, entry_price, entry_quantity in entries:
+            trade_records.append(
+                TradeRecord(
+                    instrument=bar.instrument,
+                    exchange=bar.exchange,
+                    entry_time=entry_time,
+                    exit_time=bar.timestamp,
+                    entry_price=entry_price,
+                    exit_price=fill_price,
+                    quantity=min(quantity, entry_quantity),
+                    pnl=(fill_price - entry_price) * entry_quantity,
+                    exit_reason=exit_reason,
+                )
+            )
+        return pnl
 
     @staticmethod
     def _validate_and_normalize(

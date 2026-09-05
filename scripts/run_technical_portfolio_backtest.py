@@ -43,6 +43,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--maximum-rsi", type=Decimal, default=Decimal("100"))
     parser.add_argument("--exit-mode", choices=("target", "trailing"), default="trailing")
     parser.add_argument("--trailing-stop-atr", type=Decimal, default=Decimal("3"))
+    parser.add_argument("--enable-pyramiding", action="store_true")
+    parser.add_argument("--max-pyramid-additions", type=int, default=2)
+    parser.add_argument("--pyramid-trigger-atr", type=Decimal, default=Decimal("1"))
     parser.add_argument(
         "--regime-dataset",
         default="data/real/nse_niftybees_1d.json",
@@ -56,6 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--entry-mode", choices=("trend", "breakout"), default="trend")
     parser.add_argument("--output", default="reports/technical_portfolio/2021-09-05_to_2026-09-05.md")
     parser.add_argument("--allocation-output", default="reports/technical_portfolio/allocation_history.csv")
+    parser.add_argument("--trade-ledger-output", default="reports/technical_portfolio/trade_ledger.csv")
     return parser.parse_args()
 
 
@@ -99,6 +103,9 @@ def main() -> int:
         require_relative_strength=args.require_relative_strength,
         require_52_week_proximity=args.require_52_week_proximity,
         require_breakout=args.entry_mode == "breakout",
+        enable_pyramiding=args.enable_pyramiding,
+        max_pyramid_additions=args.max_pyramid_additions,
+        pyramid_trigger_atr_multiple=args.pyramid_trigger_atr,
         start=start,
         end=end,
     )
@@ -113,11 +120,13 @@ def main() -> int:
             max_positions=args.max_positions,
         ),
     ).run(bars_by_instrument)
-    report = _render_report(args, ranked, missing, result)
+    benchmark_return = _benchmark_return(regime_bars, start, end)
+    report = _render_report(args, ranked, missing, result, benchmark_return)
     output = ROOT / args.output
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(report, encoding="utf-8")
     _write_allocation_history(ROOT / args.allocation_output, result)
+    _write_trade_ledger(ROOT / args.trade_ledger_output, result)
     LOGGER.info(
         "technical_portfolio_backtest_complete instruments=%d final_capital=%s total_return=%s",
         result.candidate_count,
@@ -127,10 +136,11 @@ def main() -> int:
     print(report)
     print(f"Report written to {output}")
     print(f"Allocation history written to {ROOT / args.allocation_output}")
+    print(f"Trade ledger written to {ROOT / args.trade_ledger_output}")
     return 0
 
 
-def _render_report(args: argparse.Namespace, ranked, missing, result) -> str:
+def _render_report(args: argparse.Namespace, ranked, missing, result, benchmark_return: Decimal | None) -> str:
     metrics = result.metrics
     trade_count = metrics.trade_count
     win_rate = Decimal(metrics.winning_trades) / Decimal(trade_count) if trade_count else Decimal("0")
@@ -152,6 +162,7 @@ def _render_report(args: argparse.Namespace, ranked, missing, result) -> str:
         f"- Market regime gate: `{'50/200 benchmark trend' if args.regime_dataset else 'disabled'}`",
         f"- Risk budget: `{args.risk_per_trade_fraction * 100:.2f}%` per trade; `{args.max_open_risk_fraction * 100:.2f}%` open portfolio risk",
         f"- Entry mode: `{args.entry_mode}`; daily SMA(20) > SMA(50), RSI 50-{args.maximum_rsi}, volume ratio >= 1.0",
+        f"- Pyramiding: `{'enabled' if args.enable_pyramiding else 'disabled'}`; max additions=`{args.max_pyramid_additions}`, trigger=`{args.pyramid_trigger_atr} ATR`",
         "- Weekly trend, relative strength, 52-week proximity, volatility contraction, and breakout quality rank candidates",
         f"- Hard gates: weekly=`{args.require_weekly_confirmation}`, relative-strength=`{args.require_relative_strength}`, 52-week=`{args.require_52_week_proximity}`",
         f"- Exit: 2 ATR stop, {f'{args.trailing_stop_atr} ATR trailing stop' if args.exit_mode == 'trailing' else '3 ATR target'}, or SMA(20) < SMA(50)",
@@ -166,6 +177,8 @@ def _render_report(args: argparse.Namespace, ranked, missing, result) -> str:
         f"- Sharpe ratio: `{metrics.sharpe_ratio:.2f}`",
         f"- Trades: `{trade_count}`; winning: `{metrics.winning_trades}`; losing: `{metrics.losing_trades}`; win rate: `{win_rate * 100:.2f}%`",
         f"- Profit factor: `{metrics.profit_factor:.2f}`",
+        f"- NIFTYBEES buy-and-hold return: `{benchmark_return * 100:.2f}%`" if benchmark_return is not None else "- NIFTYBEES buy-and-hold return: `unavailable`",
+        f"- Strategy excess return versus NIFTYBEES: `{(metrics.total_return - benchmark_return) * 100:.2f}%`" if benchmark_return is not None else "- Strategy excess return versus NIFTYBEES: `unavailable`",
         "",
         "## Allocation",
         "",
@@ -213,6 +226,48 @@ def _write_allocation_history(path: Path, result) -> None:
                     ";".join(snapshot.instruments),
                 )
             )
+
+
+def _write_trade_ledger(path: Path, result) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            (
+                "instrument",
+                "exchange",
+                "entry_time",
+                "exit_time",
+                "entry_price",
+                "exit_price",
+                "quantity",
+                "pnl",
+                "exit_reason",
+            )
+        )
+        for trade in result.trade_records:
+            writer.writerow(
+                (
+                    trade.instrument,
+                    trade.exchange,
+                    trade.entry_time.isoformat(),
+                    trade.exit_time.isoformat(),
+                    str(trade.entry_price),
+                    str(trade.exit_price),
+                    trade.quantity,
+                    str(trade.pnl),
+                    trade.exit_reason,
+                )
+            )
+
+
+def _benchmark_return(bars, start: datetime, end: datetime) -> Decimal | None:
+    if not bars:
+        return None
+    visible = [bar for bar in bars if start <= bar.timestamp <= end]
+    if len(visible) < 2:
+        return None
+    return visible[-1].close / visible[0].close - Decimal("1")
 
 
 def _india_day_start(value: date) -> datetime:
