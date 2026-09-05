@@ -37,10 +37,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start", type=date.fromisoformat, default=date(2021, 9, 5))
     parser.add_argument("--end", type=date.fromisoformat, default=date(2026, 9, 5))
     parser.add_argument("--top-n", type=int, default=200)
+    parser.add_argument("--universe-mode", choices=("fixed", "dynamic"), default="fixed")
     parser.add_argument("--initial-capital", type=Decimal, default=Decimal("100000"))
     parser.add_argument("--max-positions", type=int, default=8)
     parser.add_argument("--maximum-rsi", type=Decimal, default=Decimal("100"))
     parser.add_argument("--exit-mode", choices=("target", "trailing"), default="trailing")
+    parser.add_argument("--trailing-stop-atr", type=Decimal, default=Decimal("3"))
     parser.add_argument(
         "--regime-dataset",
         default="data/real/nse_niftybees_1d.json",
@@ -51,6 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--require-weekly-confirmation", action="store_true")
     parser.add_argument("--require-relative-strength", action="store_true")
     parser.add_argument("--require-52-week-proximity", action="store_true")
+    parser.add_argument("--entry-mode", choices=("trend", "breakout"), default="trend")
     parser.add_argument("--output", default="reports/technical_portfolio/2021-09-05_to_2026-09-05.md")
     parser.add_argument("--allocation-output", default="reports/technical_portfolio/allocation_history.csv")
     return parser.parse_args()
@@ -63,12 +66,18 @@ def main() -> int:
     start = _india_day_start(args.start)
     end = _india_day_end(args.end)
     data_dir = ROOT / args.data_dir
-    dataset_paths = sorted(data_dir.glob("nse_*_1d.json"))
     ranked = rank_liquid_instruments(
         data_dir,
         top_n=args.top_n,
         as_of=start.replace(hour=23, minute=59, second=59),
     )
+    if args.universe_mode == "fixed":
+        dataset_paths = [
+            data_dir / f"{rank.exchange.lower()}_{rank.instrument.lower()}_1d.json"
+            for rank in ranked
+        ]
+    else:
+        dataset_paths = sorted(data_dir.glob("nse_*_1d.json"))
     bars_by_instrument = {}
     missing = []
     for path in dataset_paths:
@@ -85,10 +94,11 @@ def main() -> int:
         max_positions=args.max_positions,
         maximum_rsi=args.maximum_rsi,
         use_profit_target=args.exit_mode == "target",
-        trailing_stop_atr_multiple=Decimal("3") if args.exit_mode == "trailing" else None,
+        trailing_stop_atr_multiple=args.trailing_stop_atr if args.exit_mode == "trailing" else None,
         require_weekly_confirmation=args.require_weekly_confirmation,
         require_relative_strength=args.require_relative_strength,
         require_52_week_proximity=args.require_52_week_proximity,
+        require_breakout=args.entry_mode == "breakout",
         start=start,
         end=end,
     )
@@ -136,13 +146,15 @@ def _render_report(args: argparse.Namespace, ranked, missing, result) -> str:
         f"- Initial liquidity snapshot: `{len(ranked)}` instruments",
         f"- Loaded/backtested histories: `{result.candidate_count}` local NSE cash-equity datasets",
         f"- Maximum open positions: `{args.max_positions}`",
-        f"- Active universe: top `{args.top_n}` by 20-day traded value, refreshed every 21 trading days",
+        f"- Universe mode: `{args.universe_mode}`",
+        f"- Active universe: top `{args.top_n}` by 20-day traded value, refreshed every 21 trading days when dynamic",
         "- Data frequency: daily bars; signals use the closed bar and execute at the next available bar open",
         f"- Market regime gate: `{'50/200 benchmark trend' if args.regime_dataset else 'disabled'}`",
         f"- Risk budget: `{args.risk_per_trade_fraction * 100:.2f}%` per trade; `{args.max_open_risk_fraction * 100:.2f}%` open portfolio risk",
-        f"- Entry: daily SMA(20) > SMA(50), RSI 50-{args.maximum_rsi}, volume ratio >= 1.0; weekly trend, relative strength, 52-week proximity, and volatility contraction rank candidates",
+        f"- Entry mode: `{args.entry_mode}`; daily SMA(20) > SMA(50), RSI 50-{args.maximum_rsi}, volume ratio >= 1.0",
+        "- Weekly trend, relative strength, 52-week proximity, volatility contraction, and breakout quality rank candidates",
         f"- Hard gates: weekly=`{args.require_weekly_confirmation}`, relative-strength=`{args.require_relative_strength}`, 52-week=`{args.require_52_week_proximity}`",
-        f"- Exit: 2 ATR stop, {'3 ATR target' if args.exit_mode == 'target' else '3 ATR trailing stop'}, or SMA(20) < SMA(50)",
+        f"- Exit: 2 ATR stop, {f'{args.trailing_stop_atr} ATR trailing stop' if args.exit_mode == 'trailing' else '3 ATR target'}, or SMA(20) < SMA(50)",
         "",
         "## Results",
         "",

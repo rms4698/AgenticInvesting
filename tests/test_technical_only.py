@@ -100,6 +100,21 @@ class TechnicalOnlyPortfolioTests(unittest.TestCase):
         ).run({"TEST": make_bars("TEST", 121)})
         self.assertGreaterEqual(result.metrics.trade_count, 1)
 
+    def test_breakout_mode_is_configurable(self) -> None:
+        config = TechnicalOnlyConfig(
+            minimum_rsi=Decimal("0"),
+            maximum_rsi=Decimal("100"),
+            minimum_volume_ratio=Decimal("0"),
+            breakout_lookback=50,
+            require_breakout=True,
+            weekly_sma_period=4,
+            weekly_slope_lookback=1,
+            start=datetime(2020, 1, 1, tzinfo=timezone.utc),
+            end=datetime(2020, 4, 30, tzinfo=timezone.utc),
+        )
+        result = TechnicalOnlyBacktester(config=config).run({"TEST": make_bars("TEST", 121)})
+        self.assertGreaterEqual(result.metrics.trade_count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

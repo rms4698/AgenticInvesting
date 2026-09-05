@@ -46,6 +46,9 @@ class TechnicalOnlyConfig:
     require_weekly_confirmation: bool = False
     require_relative_strength: bool = False
     require_52_week_proximity: bool = False
+    breakout_lookback: int = 120
+    require_breakout: bool = False
+    breakout_volume_ratio: Decimal = Decimal("1")
     start: datetime | None = None
     end: datetime | None = None
 
@@ -71,6 +74,8 @@ class TechnicalOnlyConfig:
             raise ValueError("minimum_close_to_52_week_high must be in (0, 1]")
         if self.weekly_sma_period < 2 or self.weekly_slope_lookback < 1:
             raise ValueError("weekly settings are invalid")
+        if self.breakout_lookback < self.slow_period or self.breakout_volume_ratio < 0:
+            raise ValueError("breakout settings are invalid")
         if self.start is not None and self.start.tzinfo is None:
             raise ValueError("start must be timezone-aware")
         if self.end is not None and self.end.tzinfo is None:
@@ -343,6 +348,19 @@ class TechnicalOnlyBacktester:
         close_to_high = snapshot.close / max(bar.close for bar in history[-high_lookback:])
         if self.config.require_52_week_proximity and close_to_high < self.config.minimum_close_to_52_week_high:
             return None
+        breakout_available = len(history) > self.config.breakout_lookback
+        breakout_high = (
+            max(bar.high for bar in history[-self.config.breakout_lookback - 1 : -1])
+            if breakout_available
+            else None
+        )
+        breakout = (
+            breakout_high is not None
+            and snapshot.close > breakout_high
+            and snapshot.volume_ratio >= self.config.breakout_volume_ratio
+        )
+        if self.config.require_breakout and not breakout:
+            return None
         stop_price = snapshot.close - snapshot.atr * self.config.stop_atr_multiple
         if stop_price <= 0:
             return None
@@ -358,10 +376,11 @@ class TechnicalOnlyBacktester:
         volatility_score = self._volatility_contraction_score(history, snapshot)
         weekly_score = Decimal("0.2") if weekly else Decimal("0")
         proximity_score = close_to_high
+        breakout_score = Decimal("0.25") if breakout else Decimal("0")
         return TechnicalOnlyCandidate(
             instrument=snapshot.instrument,
             exchange=snapshot.exchange,
-            score=trend_score + momentum_score + volume_score + relative_score + volatility_score + weekly_score + proximity_score,
+            score=trend_score + momentum_score + volume_score + relative_score + volatility_score + weekly_score + proximity_score + breakout_score,
             technical=snapshot,
             stop_price=stop_price,
             target_price=target_price,
