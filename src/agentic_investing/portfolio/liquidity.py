@@ -28,6 +28,7 @@ def rank_liquid_instruments(
     volume_window: int = 20,
     max_staleness: timedelta = timedelta(days=10),
     now: datetime | None = None,
+    as_of: datetime | None = None,
 ) -> tuple[LiquidityRank, ...]:
     """Rank locally ingested instruments by recent average traded volume.
 
@@ -37,16 +38,19 @@ def rank_liquid_instruments(
 
     if top_n < 1 or volume_window < 1:
         raise ValueError("top_n and volume_window must be positive")
-    current = now or datetime.now(timezone.utc)
+    current = as_of or now or datetime.now(timezone.utc)
     ranks: list[LiquidityRank] = []
     for path in Path(data_dir).glob(f"{exchange.lower()}_*_{timeframe}.json"):
         bars = load_bars_json(path)
         if not bars:
             continue
-        last = bars[-1]
+        available_bars = [bar for bar in bars if bar.timestamp <= current]
+        if not available_bars:
+            continue
+        last = available_bars[-1]
         if last.timestamp.tzinfo is None or current - last.timestamp > max_staleness:
             continue
-        selected = bars[-volume_window:]
+        selected = available_bars[-volume_window:]
         average_volume = sum((Decimal(bar.volume) for bar in selected), Decimal("0")) / Decimal(len(selected))
         ranks.append(
             LiquidityRank(
