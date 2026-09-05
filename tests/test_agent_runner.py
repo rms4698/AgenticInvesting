@@ -1,6 +1,7 @@
 import sys
 import tempfile
 import unittest
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -14,7 +15,6 @@ if str(SRC_DIR) not in sys.path:
 from agentic_investing.agent import AgentRunConfig, AgentRunner, AgentToolkit
 from agentic_investing.data.models import Bar
 from agentic_investing.journal import TradeJournal
-from agentic_investing.research import AlphaVantageClient
 
 
 @dataclass
@@ -96,8 +96,6 @@ def make_toolkit_with_bars(tmp_path: Path) -> AgentToolkit:
         close=Decimal("100.5"),
         volume=1000,
     )
-    import json
-
     payload = [
         {
             "instrument": bar.instrument,
@@ -118,7 +116,6 @@ def make_toolkit_with_bars(tmp_path: Path) -> AgentToolkit:
     return AgentToolkit(
         journal=journal,
         data_dir=data_dir,
-        alpha_vantage_client_factory=lambda: AlphaVantageClient(api_key="unused", http_get=lambda *a, **k: {}),
     )
 
 

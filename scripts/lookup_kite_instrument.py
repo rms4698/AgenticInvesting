@@ -7,6 +7,8 @@ endpoint and prints matching rows for manual/automated confirmation.
 import sys
 from pathlib import Path
 
+from kiteconnect import KiteConnect
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 SCRIPTS = ROOT / "scripts"
@@ -32,12 +34,6 @@ def main() -> int:
         )
         return 2
     api_key, access_token = credentials
-
-    try:
-        from kiteconnect import KiteConnect
-    except ImportError:
-        print("Install the official kiteconnect Python package before using this CLI.", file=sys.stderr)
-        return 2
 
     kite = KiteConnect(api_key=api_key)
     kite.set_access_token(access_token)

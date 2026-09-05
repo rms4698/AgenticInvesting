@@ -11,27 +11,19 @@ support, and MCP (the protocol used by ``agentic_investing.mcp_server``) is
 Anthropic's own open standard, so the same toolkit naturally works from
 either this custom runner or a generic MCP client such as Claude Desktop.
 
-Research tooling: Alpha Vantage (``AgentToolkit.get_news_sentiment`` /
-``get_company_overview``) has no officially documented, comprehensive NSE
-fundamentals/news coverage — its docs only confirm a bare-symbol convention
-for NSE and a ``.BSE`` suffix for BSE, with no explicit guarantee of India
-coverage depth. Rather than depend on Alpha Vantage as the ONLY source for
-India-specific research, Claude's native ``web_search`` server tool (see
-``WEB_SEARCH_TOOL_TYPE``) is included alongside the client-side tools by
-default — it lets the model read moneycontrol.com, screener.in, NSE/BSE
-circulars, and Indian financial press directly, sidestepping both Alpha
-Vantage's undocumented India coverage and the ToS/fragility problems of
-scraping Screener.in/Trendlyne/NSE's internal endpoints ourselves. Alpha
-Vantage remains available as a fast, structured, deterministic fallback for
-large/well-covered names. ``web_search`` is a pure "server tool" — Anthropic
-executes it and returns results already embedded in the response, so it
-never goes through ``AgentToolkit``/``ProposalExecutor`` and cannot affect a
-broker position.
+Research tooling uses Claude's native ``web_search`` server tool (see
+``WEB_SEARCH_TOOL_TYPE``) for Indian-specific news, company filings,
+fundamentals, corporate actions, and financial press. It lets the model read
+moneycontrol.com, screener.in, NSE/BSE circulars, and other sources directly,
+without this application scraping unofficial endpoints or depending on a
+poorly documented market-data aggregator. ``web_search`` is a pure "server
+tool" — Anthropic executes it and returns results already embedded in the
+response, so it never goes through ``AgentToolkit``/``ProposalExecutor`` and
+cannot affect a broker position.
 
 The client is accessed through a small ``AnthropicClient`` Protocol rather
 than importing the SDK type directly, so tests can inject a scripted fake
-message sequence with no network access and no API key — mirroring the
-``http_get``-injection pattern already used by ``AlphaVantageClient``.
+message sequence with no network access and no API key.
 """
 
 from __future__ import annotations
@@ -41,6 +33,11 @@ import json
 import os
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
+
+import anthropic
+
+from agentic_investing.config import load_prompt
+from agentic_investing.logging_config import get_logger
 
 from .tools import AgentToolkit, build_anthropic_tool_schemas
 
@@ -53,33 +50,8 @@ DEFAULT_MODEL = "claude-sonnet-4-5"
 # results inline in the response — it is never dispatched through
 # ``AgentToolkit._dispatch_tool`` and has no path to a broker call.
 WEB_SEARCH_TOOL_TYPE = "web_search_20250305"
-
-SYSTEM_PROMPT = (
-    "You are a cautious equity research analyst for an Indian-markets (NSE/BSE) stock "
-    "trading account. Your ONLY job is to research one instrument at a time using the "
-    "tools provided, then call submit_trade_proposal exactly once with your decision "
-    "(BUY, SELL, or HOLD) and your reasoning.\n\n"
-    "Non-negotiable priorities, in order:\n"
-    "1. Reduce risk. If you are not genuinely confident in a BUY, propose HOLD.\n"
-    "2. A monthly return of roughly 2% is a soft, non-mandatory aspiration. NEVER "
-    "recommend a trade you would not otherwise recommend just to chase this number, "
-    "and never treat missing it as a failure.\n\n"
-    "Ground rules:\n"
-    "- Always check get_journal_history and get_daily_plan FIRST, so you do not "
-    "duplicate or contradict a very recent decision on the same instrument.\n"
-    "- Use get_recent_bars and get_technical_indicator for price/technical context.\n"
-    "- For news and fundamentals on Indian (NSE/BSE) companies, PREFER the web_search "
-    "tool over get_news_sentiment/get_company_overview: search moneycontrol.com, "
-    "screener.in, NSE/BSE circulars, and Indian financial press directly, since "
-    "Alpha Vantage's India coverage is not officially documented as comprehensive. "
-    "Use get_news_sentiment/get_company_overview only as a quick structured "
-    "supplement, never as your sole source for an Indian stock.\n"
-    "- You cannot place an order directly. submit_trade_proposal is independently "
-    "risk-checked by deterministic code after you call it — it may reject your proposal "
-    "regardless of your confidence, and any target/stop you suggest is only honored if "
-    "at least as conservative as the platform's own default. This is intentional.\n"
-    "- Call submit_trade_proposal exactly once per instrument per run, as your final action."
-)
+SYSTEM_PROMPT_FILE = "agent_system.md"
+TASK_PROMPT_FILE = "agent_task.md"
 
 
 class AnthropicMessage(Protocol):
@@ -101,8 +73,6 @@ class RealAnthropicClient:
     """Thin adapter over ``anthropic.Anthropic`` matching the ``AnthropicClient`` protocol."""
 
     def __init__(self, *, api_key: str | None = None) -> None:
-        import anthropic
-
         resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         if not resolved_key:
             raise ValueError("Anthropic API key not provided. Pass api_key= or set ANTHROPIC_API_KEY.")
@@ -133,8 +103,7 @@ class AgentRunConfig:
     max_tokens: int = 4096
     max_tool_iterations: int = 12
     # Claude's native web_search server tool — see the module docstring for
-    # why this is on by default (Alpha Vantage's India coverage is not
-    # officially documented as comprehensive). Anthropic bills per search
+    # why this is on by default for India-specific research. Anthropic bills per search
     # ($10/1,000 as of writing) in addition to token costs, so max_web_searches
     # caps the damage from a misbehaving/looping model within one instrument.
     enable_web_search: bool = True
@@ -166,6 +135,8 @@ class AgentRunner:
         self.toolkit = toolkit
         self.client = client
         self.config = config or AgentRunConfig()
+        self._logger = get_logger(__name__)
+        self._system_prompt = load_prompt(SYSTEM_PROMPT_FILE)
         # Derived once from the toolkit's own method signatures — see
         # build_anthropic_tool_schemas()'s docstring for why this is never
         # hand-maintained. Recomputed per-instance (not module-level) so a
@@ -187,20 +158,23 @@ class AgentRunner:
     def _dispatch_tool(self, name: str, tool_input: dict[str, Any]) -> Any:
         method = getattr(self.toolkit, name, None)
         if method is None:
+            self._logger.error("unknown_client_tool name=%s", name)
             return {"error": f"unknown tool: {name}"}
+        self._logger.info("client_tool_call name=%s", name)
         try:
-            return method(**tool_input)
+            result = method(**tool_input)
+            self._logger.info("client_tool_result name=%s", name)
+            return result
         except Exception as exc:  # noqa: BLE001 — surfaced to the model as a tool error, not a crash
+            self._logger.exception("client_tool_failed name=%s", name)
             return {"error": str(exc)}
 
     def run_for_instrument(self, *, instrument: str, exchange: str = "NSE") -> InstrumentRunResult:
+        task_prompt = load_prompt(TASK_PROMPT_FILE).format(instrument=instrument, exchange=exchange)
         messages: list[dict[str, Any]] = [
             {
                 "role": "user",
-                "content": (
-                    f"Analyze {instrument} on {exchange} and decide whether to BUY, SELL, or "
-                    "HOLD, then call submit_trade_proposal with your decision."
-                ),
+                "content": task_prompt,
             }
         ]
         tool_calls: list[str] = []
@@ -208,11 +182,17 @@ class AgentRunner:
         web_search_count = 0
         final_text = ""
 
-        for _ in range(self.config.max_tool_iterations):
+        for iteration in range(self.config.max_tool_iterations):
+            self._logger.debug(
+                "agent_turn instrument=%s exchange=%s iteration=%d",
+                instrument,
+                exchange,
+                iteration,
+            )
             response = self.client.create_message(
                 model=self.config.model,
                 max_tokens=self.config.max_tokens,
-                system=SYSTEM_PROMPT,
+                system=self._system_prompt,
                 messages=messages,
                 tools=self._tool_schemas,
             )
@@ -231,7 +211,8 @@ class AgentRunner:
             web_search_count += sum(
                 1
                 for block in response.content
-                if getattr(block, "type", None) == "server_tool_use" and getattr(block, "name", None) == "web_search"
+                if getattr(block, "type", None) == "server_tool_use"
+                and getattr(block, "name", None) == "web_search"
             )
             if text_blocks:
                 final_text = text_blocks[-1].text

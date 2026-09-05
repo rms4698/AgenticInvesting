@@ -15,6 +15,8 @@ import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from kiteconnect import KiteConnect
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
@@ -86,12 +88,6 @@ def main() -> int:
         )
         return 2
     api_key, access_token = credentials
-
-    try:
-        from kiteconnect import KiteConnect
-    except ImportError:
-        print("Install the official kiteconnect Python package before using this CLI.", file=sys.stderr)
-        return 2
 
     kite = KiteConnect(api_key=api_key)
     kite.set_access_token(access_token)

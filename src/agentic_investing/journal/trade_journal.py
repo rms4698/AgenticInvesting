@@ -13,6 +13,7 @@ small enough that plain SQL is clearer and has zero extra dependencies.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -22,8 +23,6 @@ from typing import Any
 
 def default_journal_path() -> Path:
     """Local, non-repository storage path, mirroring the Kite session convention."""
-
-    import os
 
     root = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local"))
     return root / "AgenticInvesting" / "trade_journal.sqlite3"

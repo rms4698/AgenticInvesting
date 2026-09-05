@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
+from agentic_investing.logging_config import get_logger
 from agentic_investing.risk import RiskEngine
 
 from .broker import BrokerAdapter
@@ -36,6 +37,7 @@ class OrderManager:
     def __init__(self, broker: BrokerAdapter, risk_engine: RiskEngine) -> None:
         self._broker = broker
         self._risk_engine = risk_engine
+        self._logger = get_logger(__name__)
 
     def submit_buy(
         self,
@@ -54,6 +56,7 @@ class OrderManager:
 
         existing = self._broker.get_order(client_order_id)
         if existing is not None:
+            self._logger.info("order_idempotent client_order_id=%s", client_order_id)
             return OrderOutcome(submitted=True, order=existing)
 
         open_position_count = sum(1 for position in self._broker.list_positions() if position.quantity > 0)
@@ -82,6 +85,7 @@ class OrderManager:
             quantity=quantity,
         )
         order = self._place(request, fill_price=fill_price, timestamp=timestamp)
+        self._logger.info("buy_order_outcome client_order_id=%s status=%s", client_order_id, order.status)
         return OrderOutcome(submitted=order.status != OrderStatus.REJECTED, order=order, reasons=self._rejection_reasons(order))
 
     def submit_sell(
@@ -113,6 +117,7 @@ class OrderManager:
             quantity=quantity,
         )
         order = self._place(request, fill_price=fill_price, timestamp=timestamp)
+        self._logger.info("sell_order_outcome client_order_id=%s status=%s", client_order_id, order.status)
         return OrderOutcome(submitted=order.status != OrderStatus.REJECTED, order=order, reasons=self._rejection_reasons(order))
 
     def reconcile(self) -> tuple[str, ...]:

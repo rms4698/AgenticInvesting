@@ -17,6 +17,8 @@ data/raw/
 data/processed/
 data/real/
 reports/*
+.tmp_mcp_test/
+logs/
 !reports/shadow_daily/
 reports/shadow_daily/*
 !reports/shadow_daily/observation_log.md
@@ -26,6 +28,7 @@ reports/shadow_daily/*
 kite-session.json
 kite-session.json.tmp
 
-# IDE
-.vscode/
+# IDE: keep workspace diagnostics settings versioned; ignore personal editor state
+.vscode/*
+!.vscode/settings.json
 .idea/

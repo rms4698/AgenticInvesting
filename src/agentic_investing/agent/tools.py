@@ -29,17 +29,18 @@ from __future__ import annotations
 
 import inspect
 import os
-from dataclasses import asdict
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
+
+from mcp.server.mcpserver.utilities.func_metadata import func_metadata
 
 from agentic_investing.agent.executor import ProposalExecutor, ProposalExecutorConfig, ProposalResult
 from agentic_investing.agent.proposal import TradeProposal
 from agentic_investing.data.json_loader import load_bars_json
 from agentic_investing.data.models import Bar
 from agentic_investing.journal import TradeJournal
-from agentic_investing.research import AlphaVantageClient
+from agentic_investing.logging_config import get_logger
 
 # The single source of truth for "which AgentToolkit methods are tools."
 # Both the MCP server and the Anthropic-facing schema builder iterate this
@@ -47,9 +48,6 @@ from agentic_investing.research import AlphaVantageClient
 # every consumer with a schema derived automatically from its signature.
 TOOL_METHOD_NAMES: tuple[str, ...] = (
     "get_recent_bars",
-    "get_news_sentiment",
-    "get_company_overview",
-    "get_technical_indicator",
     "get_journal_history",
     "get_daily_plan",
     "submit_trade_proposal",
@@ -78,10 +76,8 @@ def load_local_bars(instrument: str, exchange: str, timeframe: str, *, data_dir:
 class AgentToolkit:
     """Bundles the shared research/journal/execution tools behind one object.
 
-    ``alpha_vantage_client_factory`` and ``executor_factory`` are injectable
-    purely for testing (matching the ``http_get``-injection pattern already
-    used by ``AlphaVantageClient`` itself) — production callers can leave
-    both at their defaults.
+    ``executor_factory`` is injectable purely for testing; production callers
+    can leave it at its default.
     """
 
     def __init__(
@@ -89,13 +85,12 @@ class AgentToolkit:
         *,
         journal: TradeJournal | None = None,
         data_dir: Path | None = None,
-        alpha_vantage_client_factory: Callable[[], AlphaVantageClient] = AlphaVantageClient,
         executor_config: ProposalExecutorConfig | None = None,
         executor_factory: Callable[[str, str, ProposalExecutorConfig, TradeJournal], ProposalExecutor] | None = None,
     ) -> None:
         self.journal = journal or TradeJournal()
+        self._logger = get_logger(__name__)
         self.data_dir = data_dir
-        self._alpha_vantage_client_factory = alpha_vantage_client_factory
         self._executor_config = executor_config or ProposalExecutorConfig()
         self._executor_factory = executor_factory or (
             lambda instrument, exchange, config, journal: ProposalExecutor(
@@ -103,12 +98,18 @@ class AgentToolkit:
             )
         )
         self._executors: dict[tuple[str, str], ProposalExecutor] = {}
+        self._logger.info("agent_toolkit_ready tools=%s", ",".join(TOOL_METHOD_NAMES))
 
     def _get_executor(self, instrument: str, exchange: str) -> ProposalExecutor:
         key = (instrument.upper(), exchange.upper())
         if key not in self._executors:
             self._executors[key] = self._executor_factory(key[0], key[1], self._executor_config, self.journal)
         return self._executors[key]
+
+    def close(self) -> None:
+        """Close resources owned by the toolkit, including journal storage."""
+
+        self.journal.close()
 
     def get_recent_bars(
         self, *, instrument: str, exchange: str = "NSE", timeframe: str = "1d", count: int = 60
@@ -120,7 +121,15 @@ class AgentToolkit:
         tool read-only and safe to call as often as needed.
         """
 
+        path = local_dataset_path(instrument, exchange, timeframe, data_dir=self.data_dir)
         bars = load_local_bars(instrument, exchange, timeframe, data_dir=self.data_dir)
+        self._logger.debug(
+            "loading_local_bars instrument=%s exchange=%s timeframe=%s path=%s",
+            instrument,
+            exchange,
+            timeframe,
+            path,
+        )
         recent = bars[-count:]
         return [
             {
@@ -133,38 +142,6 @@ class AgentToolkit:
             }
             for bar in recent
         ]
-
-    def get_news_sentiment(self, *, instrument: str, exchange: str = "NSE", limit: int = 10) -> list[dict[str, Any]]:
-        """Ticker-filtered recent news with sentiment scores, from Alpha Vantage."""
-
-        client = self._alpha_vantage_client_factory()
-        articles = client.news_sentiment(instrument=instrument, exchange=exchange, limit=limit)
-        return [asdict(article) for article in articles]
-
-    def get_company_overview(self, *, instrument: str, exchange: str = "NSE") -> dict[str, Any]:
-        """Fundamental snapshot (P/E, margins, analyst target, 52-week range) from Alpha Vantage."""
-
-        client = self._alpha_vantage_client_factory()
-        overview = client.company_overview(instrument=instrument, exchange=exchange)
-        if overview is None:
-            return {"error": "no fundamentals data available for this symbol"}
-        return asdict(overview)
-
-    def get_technical_indicator(
-        self,
-        *,
-        instrument: str,
-        function: str,
-        exchange: str = "NSE",
-        interval: str = "daily",
-        time_period: int = 14,
-    ) -> dict[str, Any]:
-        """One technical indicator's time series (function='RSI', 'MACD', 'ADX', etc.) from Alpha Vantage."""
-
-        client = self._alpha_vantage_client_factory()
-        return client.technical_indicator(
-            instrument=instrument, exchange=exchange, function=function, interval=interval, time_period=time_period
-        )
 
     def get_journal_history(
         self, *, instrument: str | None = None, exchange: str = "NSE", limit: int = 20
@@ -269,8 +246,6 @@ def build_anthropic_tool_schemas(toolkit: "AgentToolkit") -> tuple[dict[str, Any
     picked up here update automatically. Never hand-maintain a parallel
     schema list again.
     """
-
-    from mcp.server.mcpserver.utilities.func_metadata import func_metadata
 
     schemas: list[dict[str, Any]] = []
     for name in TOOL_METHOD_NAMES:

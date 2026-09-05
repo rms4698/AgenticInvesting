@@ -34,29 +34,24 @@ from __future__ import annotations
 
 from mcp.server.mcpserver import MCPServer
 
+from agentic_investing.config import load_prompt
+from agentic_investing.logging_config import get_logger
 from agentic_investing.agent.tools import TOOL_METHOD_NAMES, AgentToolkit
 
 server = MCPServer(
     name="agentic-investing",
-    instructions=(
-        "Tools for researching and proposing trades in Indian-market stocks. "
-        "You may read market data, news, fundamentals, technical indicators, "
-        "and this account's trade journal freely. You may NEVER place an "
-        "order directly — the only way to act on a decision is "
-        "submit_trade_proposal, which is independently risk-checked and may "
-        "be rejected regardless of your confidence. Risk reduction is the "
-        "first priority; a monthly return of about 2% is a soft aspiration, "
-        "never a requirement to force a trade toward."
-    ),
+    instructions=load_prompt("mcp_server_instructions.md"),
 )
 
 # Kept for the process lifetime so stop-loss/target state, the risk engine's
 # equity curve, and the journal connection persist across tool calls within
 # a single run.
 _toolkit = AgentToolkit()
+_logger = get_logger(__name__)
 
 for _tool_name in TOOL_METHOD_NAMES:
     server.add_tool(getattr(_toolkit, _tool_name), name=_tool_name)
+_logger.info("mcp_server_ready tools=%s", ",".join(TOOL_METHOD_NAMES))
 
 
 def main() -> None:

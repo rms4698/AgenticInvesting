@@ -5,6 +5,8 @@ from decimal import Decimal
 from typing import Sequence
 
 from agentic_investing.data.models import Bar
+from agentic_investing.backtesting.engine import Trade
+from agentic_investing.backtesting.metrics import calculate_metrics
 from agentic_investing.strategies import SmaCrossoverStrategy
 
 from .engine import BacktestConfig, BacktestResult, Backtester
@@ -302,8 +304,6 @@ def run_cost_sensitivity(
 
 def _benchmark_trade(first: Bar, last: Bar, quantity: int, entry: Decimal, exit: Decimal, costs: Decimal):
     gross = (exit - entry) * quantity
-    from .engine import Trade
-
     return Trade(first.instrument, first.timestamp, last.timestamp, quantity, entry, exit, gross, costs, gross - costs)
 
 
@@ -313,8 +313,6 @@ def _metrics(
     curve: Sequence[Decimal],
     trade_pnls: Sequence[Decimal],
 ):
-    from .metrics import calculate_metrics
-
     return calculate_metrics(
         initial_capital=config.initial_capital,
         final_capital=final_capital,

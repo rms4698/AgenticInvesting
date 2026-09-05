@@ -11,11 +11,17 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Event, Thread
 from typing import Any, Callable, cast
 from urllib.parse import parse_qs, urlparse
 import webbrowser
+
+from kiteconnect import KiteConnect
+
+if sys.platform == "win32":
+    import winreg
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,9 +140,7 @@ def _read_windows_user_environment(name: str) -> str | None:
     if os.name != "nt":
         return None
     try:
-        import winreg
-
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:  # type: ignore[name-defined]
             value, _value_type = winreg.QueryValueEx(key, name)
     except (FileNotFoundError, OSError, ImportError):
         return None
@@ -166,10 +170,6 @@ def authenticate_kite(
     if not actual_api_key or not actual_api_secret:
         raise ValueError("KITE_API_KEY and KITE_API_SECRET must be set locally")
     if kite_factory is None:
-        try:
-            from kiteconnect import KiteConnect
-        except ImportError as error:
-            raise RuntimeError("Install kiteconnect before authenticating") from error
         kite_factory = KiteConnect
 
     kite = kite_factory(actual_api_key)

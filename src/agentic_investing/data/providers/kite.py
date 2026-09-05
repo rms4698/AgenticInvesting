@@ -2,6 +2,8 @@
 
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+import hashlib
+import json
 from typing import Any, Protocol
 
 from ..models import Bar, Timeframe
@@ -145,8 +147,5 @@ def _to_utc(value: Any) -> datetime:
 
 
 def _digest_candles(candles: list[dict[str, Any]]) -> str:
-    import hashlib
-    import json
-
     payload = json.dumps(candles, default=str, separators=(",", ":"), sort_keys=True).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()

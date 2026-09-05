@@ -1,7 +1,7 @@
 """Controlled agentic reasoning layer (roadmap Phase 7).
 
 Only the reasoning step here is "the agent" (an LLM call, in
-``reasoning.py``). Everything else — the ``TradeProposal`` schema,
+``runner.py``). Everything else — the ``TradeProposal`` schema,
 ``ProposalExecutor``'s risk gating, the trade journal — is plain,
 deterministic, tested Python, matching the platform's standing principle:
 agents propose, code decides.

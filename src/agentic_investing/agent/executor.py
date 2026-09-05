@@ -24,6 +24,7 @@ from decimal import Decimal
 from agentic_investing.data.models import Bar
 from agentic_investing.execution import OrderManager, OrderOutcome, PaperBroker
 from agentic_investing.journal import TradeJournal
+from agentic_investing.logging_config import get_logger
 from agentic_investing.risk import RiskEngine, RiskLimits
 
 from .proposal import TradeProposal
@@ -94,6 +95,7 @@ class ProposalExecutor:
         self.risk_engine = risk_engine or RiskEngine(self.risk_limits)
         self.order_manager = OrderManager(self.broker, self.risk_engine)
         self.journal = journal or TradeJournal()
+        self._logger = get_logger(__name__)
 
         self._stop_price: Decimal | None = None
         self._target_price: Decimal | None = None
@@ -198,6 +200,13 @@ class ProposalExecutor:
             },
             timestamp=bar.timestamp,
         )
+        self._logger.info(
+            "proposal_received instrument=%s exchange=%s action=%s confidence=%.2f",
+            proposal.instrument,
+            proposal.exchange,
+            proposal.action,
+            proposal.confidence,
+        )
 
         position = self._current_position()
 
@@ -260,6 +269,11 @@ class ProposalExecutor:
                     message=f"BUY blocked: {'; '.join(outcome.reasons) or 'unknown reason'}",
                     data={"reasons": list(outcome.reasons)},
                     timestamp=bar.timestamp,
+                )
+                self._logger.warning(
+                    "proposal_blocked instrument=%s action=BUY reasons=%s",
+                    proposal.instrument,
+                    ";".join(outcome.reasons),
                 )
             return ProposalResult(proposal=proposal, outcome=outcome, approved=outcome.submitted, reasons=outcome.reasons)
 

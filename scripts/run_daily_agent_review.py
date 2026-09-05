@@ -14,8 +14,8 @@ from ``PaperBroker`` to ``KiteBrokerAdapter`` is a deliberate, reviewed code
 change to ``AgentToolkit``/``ProposalExecutor`` construction, not a runtime
 flag that could be flipped by accident on this script's command line.
 
-Requires ``ANTHROPIC_API_KEY`` and ``ALPHA_VANTAGE_API_KEY`` in the
-environment. Requires the instrument's local dataset to already be ingested
+Requires ``ANTHROPIC_API_KEY`` in the environment. Requires the instrument's
+local dataset to already be ingested
 (see ``scripts/fetch_kite_history.py`` / ``scripts/run_daily_shadow_update.py``)
 so ``get_recent_bars``/``submit_trade_proposal`` have a price basis to use.
 

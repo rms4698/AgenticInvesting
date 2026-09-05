@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_DOWN, Decimal
 
+from agentic_investing.logging_config import get_logger
+
 from .limits import RiskLimits
 
 
@@ -29,6 +31,7 @@ class RiskEngine:
 
     def __init__(self, limits: RiskLimits) -> None:
         self.limits = limits
+        self._logger = get_logger(__name__)
         self._peak_equity: Decimal | None = None
         self._current_equity: Decimal | None = None
         self._current_date: date | None = None
@@ -82,6 +85,7 @@ class RiskEngine:
                     f"hard drawdown breached: {drawdown * 100:.2f}% >= "
                     f"{self.limits.hard_drawdown_fraction * 100:.2f}%"
                 )
+                self._logger.error("kill_switch_triggered reason=%s", self._kill_switch_reason)
 
     def reset_kill_switch(self, *, reason: str) -> None:
         """Manually clear a tripped kill switch. Requires an explicit reason.
@@ -101,6 +105,7 @@ class RiskEngine:
         self._kill_switch_reason = None
         if self._current_equity is not None:
             self._peak_equity = self._current_equity
+        self._logger.warning("kill_switch_reset reason=%s", reason.strip())
 
     def evaluate_new_position(self, *, equity: Decimal, open_position_count: int) -> RiskDecision:
         """Decide whether a new position may be opened at the given equity."""
@@ -122,7 +127,10 @@ class RiskEngine:
                 )
         if open_position_count >= self.limits.max_positions:
             reasons.append(f"max open positions reached: {open_position_count} >= {self.limits.max_positions}")
-        return RiskDecision(approved=not reasons, reasons=tuple(reasons))
+        decision = RiskDecision(approved=not reasons, reasons=tuple(reasons))
+        if not decision.approved:
+            self._logger.warning("new_position_blocked reasons=%s", ";".join(decision.reasons))
+        return decision
 
     def size_new_position(
         self,
