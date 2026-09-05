@@ -10,6 +10,7 @@ Each document has one job. Keep details in the narrowest appropriate source.
 | `docs/prompts/*.md` | Runtime prompts and long-form model instructions. Prompt files are behavior, so review and test changes. |
 | `docs/ai-cost-estimate.md` | AI-provider cost assumptions, formulas, and cost-control guidance. |
 | `docs/zerodha-capability-matrix.md` | Zerodha/Kite capabilities, current integration status, and deliberate safety gaps. |
+| `docs/fundamentals-source-policy.md` | Authoritative and licensed fundamentals-source hierarchy and fail-closed rules. |
 | `docs/decisions/` | Dated architectural and product decisions with rationale. |
 | `reports/` | Generated validation and operator artifacts, not canonical design documentation. |
 

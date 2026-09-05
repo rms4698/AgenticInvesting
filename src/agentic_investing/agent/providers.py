@@ -89,7 +89,7 @@ class AnthropicModelClient:
 
 
 class OpenAICompatibleModelClient:
-    """Adapter for OpenAI and OpenAI-compatible APIs such as DeepSeek.
+    """Adapter for OpenAI-compatible APIs such as OpenAI, DeepSeek, Gemini, and Ollama.
 
     This adapter intentionally supports client-side function tools only. The
     runner must disable Anthropic's native web-search server tool for these

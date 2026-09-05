@@ -38,7 +38,14 @@ Convert USD to INR using the exchange rate at the time of budgeting. Do not hard
 
 OpenAI, DeepSeek, and Gemini use the same runner protocol through compatible chat-completions adapters. Their actual cost depends on the selected model and token usage. DeepSeek and Gemini often offer lower-cost or free-tier experimentation, but they do not provide Claude's native web-search server tool in this framework; current web research is therefore disabled unless a separate search provider is added.
 
-`ollama` is the genuinely free-inference option: it runs a local model such as `qwen2.5:7b` on your machine through `http://localhost:11434/v1`. There is no per-token AI bill, but the tradeoff is local CPU/GPU/RAM usage, slower inference, model-download/storage cost, and no native web search. A local model should begin in advisory/paper mode and should prefer `HOLD` whenever current research is needed but unavailable.
+`ollama` is the genuinely free-inference option: the default is now `qwen3:8b` through `http://localhost:11434/v1`. Ollama supports tool calling, and Qwen3 is a better local agent choice than the older Qwen2.5 7B default. A 14B or 30B Qwen3 model can improve reasoning if your hardware supports it. There is no per-token AI bill, but the tradeoff is local CPU/GPU/RAM usage, slower inference, model-download/storage cost, and no native web search. A local model should begin in advisory/paper mode and should prefer `HOLD` whenever current research is needed but unavailable.
+
+Practical local-model guidance:
+
+- `qwen3:8b`: reasonable starting point for tool calling, structured output, and simple research summaries.
+- `qwen3:14b`: better choice when the machine has enough memory and latency is acceptable.
+- `qwen3:30b` or a comparable reasoning model: stronger, but usually unnecessary for the first paper phase.
+- Do not treat a 7B/8B local model as equivalent to Claude, OpenAI frontier models, or Gemini Pro for financial reasoning. Its safe role is research assistance and structured proposal generation, with deterministic code deciding whether anything can execute.
 
 ## Cost controls that do not weaken trading safety
 

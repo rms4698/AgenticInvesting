@@ -32,4 +32,13 @@ The current research approach is therefore:
 3. Claude native web search for current Indian filings, announcements, and financial research.
 4. HOLD when current information is missing, contradictory, or unverifiable.
 
+The application now supports `selection_mode: "all_equity"` in
+`config/portfolio_universe.json`. This means the account is not restricted to
+the seven original examples: the batch job discovers current NSE cash-equity
+symbols from Kite's instrument master. Discovery is still bounded per run so
+historical downloads, API usage, and data-quality review remain operationally
+manageable. Liquidity, fundamentals, and portfolio-risk filters decide what
+can become a candidate later; account permissions and universe discovery are
+separate concerns.
+
 We should add read-only Kite portfolio/quote tools only through our own MCP/toolkit boundary, and never expose a raw direct-order tool to an AI provider.

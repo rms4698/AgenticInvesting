@@ -1,0 +1,7 @@
+{
+  "version": "2026-09-05",
+  "exchange": "NSE",
+  "selection_mode": "all_equity",
+  "max_instruments_per_run": 50,
+  "instruments": []
+}

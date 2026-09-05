@@ -72,7 +72,7 @@ def _run_ai(args: argparse.Namespace, watchlist: list[tuple[str, str]]) -> tuple
         "openai": "gpt-4o-mini",
         "deepseek": "deepseek-chat",
         "gemini": "gemini-2.5-flash",
-        "ollama": "qwen2.5:7b",
+        "ollama": "qwen3:8b",
     }[args.provider]
     config = AgentRunConfig(model=args.model or default_model, enable_web_search=args.provider == "claude")
     toolkit = AgentToolkit(journal=TradeJournal())
