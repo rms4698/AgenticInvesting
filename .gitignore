@@ -16,6 +16,8 @@ venv/
 data/raw/
 data/processed/
 data/real/
+data/fundamentals/raw/
+data/fundamentals/snapshots.json
 reports/*
 .tmp_mcp_test/
 logs/

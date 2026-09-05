@@ -48,4 +48,5 @@ The current NIFTYBEES dataset contains one instrument, so a meaningful cross-sec
 - Run `scripts/fetch_portfolio_universe.py` after authenticating Kite to resolve symbols against the current instrument master and fetch a bounded validated batch through the existing ingestion path. Repeat batches deliberately rather than attempting an uncontrolled all-market download.
 - Use `--offset` and `--limit` to continue through the discovered universe, for example `--offset 0 --limit 50`, then `--offset 50 --limit 50`.
 - Put approved fundamentals snapshots under `data/fundamentals/`; the loader rejects naive timestamps, non-string decimal values, and duplicate instruments.
+- For a no-key path, use `scripts/collect_official_filings.py` with a reviewed NSE/BSE/company-IR manifest. It accepts structured JSON, XML/XBRL-style tags, and CSV facts, archives raw responses, and leaves unavailable metrics null.
 - The batch fetch requires a fresh Zerodha session. It is intentionally not run automatically and never places orders.

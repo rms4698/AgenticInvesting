@@ -38,3 +38,38 @@ The next production-quality fundamentals integration should be one of:
 - a controlled filing-ingestion pipeline for a smaller liquid universe that parses NSE/BSE/company filings into versioned snapshots.
 
 A free unofficial scraper is not an acceptable substitute for either.
+
+## No-key official filing collector
+
+The repository includes `scripts/collect_official_filings.py`. It requires no
+AI or data-provider key, but it is intentionally manifest-driven: every URL
+must be reviewed and classified as `nse`, `bse`, or `company_ir`. The parser
+accepts structured JSON, XML/XBRL-style tags, CSV facts, and a conservative
+PDF headline extractor. It rejects arbitrary HTML and only extracts PDF
+fields with a reviewed, issuer-agnostic pattern.
+
+Manifest example:
+
+```json
+[
+   {
+      "instrument": "RELIANCE",
+      "exchange": "NSE",
+      "source_kind": "nse",
+      "source_url": "https://www.nseindia.com/<reviewed-filing-url>",
+      "available_at": "2025-01-02T12:00:00+05:30",
+      "sector": "ENERGY"
+   }
+]
+```
+
+Run it with:
+
+```text
+.venv/Scripts/python.exe scripts/collect_official_filings.py --manifest config/official_filing_manifest.json
+```
+
+Raw responses are archived under `data/fundamentals/raw/`, identified by
+SHA-256, and the normalized snapshot is written to
+`data/fundamentals/snapshots.json`. Missing metrics remain null; a backtest or
+screener must not treat them as verified facts.

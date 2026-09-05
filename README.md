@@ -88,6 +88,21 @@ This phase adds the infrastructure for an LLM to research and *propose* trades, 
 
 ## Read-only Kite historical data
 
+## No-key fundamentals collection
+
+Fundamentals can be collected without an AI key through the controlled official
+filing path. Populate a reviewed manifest of HTTPS NSE, BSE, or company
+investor-relations filing URLs, then run:
+
+```text
+.venv/Scripts/python.exe scripts/collect_official_filings.py --manifest config/official_filing_manifest.json
+```
+
+The collector supports structured JSON, XML/XBRL-style tags, and CSV facts;
+it rejects unsupported documents rather than guessing from arbitrary pages.
+It writes timestamped snapshots to `data/fundamentals/` and archives raw
+responses for audit. See [the fundamentals source policy](docs/fundamentals-source-policy.md).
+
 The repository now includes a read-only adapter in `src/agentic_investing/data/providers/kite.py` and a local fetch script at `scripts/fetch_kite_history.py`. The adapter has no order-placement methods.
 
 Credentials are resolved automatically in this order:
