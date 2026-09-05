@@ -3,6 +3,7 @@
 from .models import FundamentalSnapshot, PortfolioDecision, ScreenedCandidate, ScreeningConfig
 from .backtest import PortfolioBacktestResult, PortfolioBacktester
 from .fundamentals import load_fundamentals_json
+from .liquidity import LiquidityRank, rank_liquid_instruments
 from .screener import build_portfolio_decisions, screen_instrument
 from .universe import PortfolioUniverse, UniverseInstrument, load_universe
 
@@ -12,6 +13,8 @@ __all__ = [
     "PortfolioBacktestResult",
     "PortfolioBacktester",
     "load_fundamentals_json",
+    "LiquidityRank",
+    "rank_liquid_instruments",
     "ScreenedCandidate",
     "ScreeningConfig",
     "build_portfolio_decisions",
